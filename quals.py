@@ -28,7 +28,9 @@ import hashlib
 import math
 import re
 import struct
+import subprocess
 import sys
+import urllib.parse
 import urllib.request
 import zlib
 from pathlib import Path
@@ -59,6 +61,8 @@ PLACEHOLDER = {
          'https://github.com/dzoba/venn17/blob/e89d6f6f8cf17294c5b32e0406088684557fbde4/paper/figures/venn19-s196002.jpg'),
 }
 CC_BY = 'https://creativecommons.org/licenses/by/4.0/'
+VIEWED = tuple(n for n in DRAWN if n not in PLACEHOLDER)   # n whose card opens view.html on this site's own drawing
+PAGES = ('index.html', 'view.html')                        # the site's pages: the list, and the viewer
 DOMAIN = 'svenn.dreev.es'
 
 
@@ -435,9 +439,9 @@ class PageParser(html.parser.HTMLParser):
         self.card['text'] += data
 
 
-def parse_page():
+def parse_page(name='index.html'):
     p = PageParser()
-    p.feed((HERE / 'index.html').read_text())
+    p.feed((HERE / name).read_text())
     return p
 
 
@@ -464,10 +468,10 @@ def qual_page_cards():
 
 @qual
 def qual_local_links():
-    """Replicata: open index.html and follow every link that is neither an absolute URL nor an in-page #anchor.
-    Expectata: each names a file in the repo."""
-    return [f'{u} missing' for u in sorted(set(parse_page().links))
-            if not u.startswith(('http', '#')) and not (HERE / u).is_file()]
+    """Replicata: open index.html and view.html and follow every link in them that is neither an absolute URL nor an
+    in-page #anchor. Expectata: each names a file in the repo (whatever query string or #anchor follows the name)."""
+    return [f'{name}: {u} missing' for name in PAGES for u in sorted(set(parse_page(name).links))
+            if not u.startswith(('http', '#')) and not (HERE / urllib.parse.urlsplit(u).path).is_file()]
 
 
 @qual
@@ -564,16 +568,151 @@ def qual_page_english():
     """Replicata: open the page in Safari, or in anything else built on WebKit. Expectata: every u is drawn as a u.
     EB Garamond's locl feature for the Latin language draws u as v (and U as V), WebKit applies it even under
     font-feature-settings: "locl" 0, and the page said lang="la", so on 2026-10-06 Safari showed "Grünbavm" and
-    "congrvent". The page is in English, so its one lang attribute is <html lang="en">."""
-    langs = [(t, a['lang']) for t, a in parse_page().tags if 'lang' in a]
-    return [] if langs == [('html', 'en')] else [f'lang attributes {langs}, not just <html lang="en">']
+    "congrvent". The pages are in English, so each one's one lang attribute is <html lang="en">."""
+    return [f'{name}: lang attributes {langs}, not just <html lang="en">' for name in PAGES
+            for langs in [[(t, a['lang']) for t, a in parse_page(name).tags if 'lang' in a]] if langs != [('html', 'en')]]
 
 
 @qual
 def qual_page_latin():
-    """Replicata: read index.html. Expectata: every element of class latin (UI copy, which starts out in
+    """Replicata: read index.html and view.html. Expectata: every element of class latin (UI copy, which starts out in
     Latin per AGENTS.md rule 7) has a TODO comment right above it recapping the intended English."""
-    return parse_page().latin_bad
+    return [f'{name}: {bad}' for name in PAGES for bad in parse_page(name).latin_bad]
+
+
+_browser = {}
+
+
+def browser(check):
+    """The problems tools/browser_quals.mjs found with view.html, the viewer, in one of its checks, in Chromium, WebKit
+    or Firefox. All the checks run together, on first use. They need `cd tools && npm ci`, and Playwright's builds of
+    the three browsers (`cd tools && npx playwright install` if they are not already installed)."""
+    if not _browser:
+        run = subprocess.run(['node', str(HERE / 'tools' / 'browser_quals.mjs'), *map(str, VIEWED)],
+                             capture_output=True, text=True)
+        assert run.returncode == 0, run.stderr[-3000:]
+        _browser.update(json.loads(run.stdout))
+    return _browser[check]
+
+
+@qual
+def qual_viewer_linked():
+    """Replicata: on index.html, click the picture on each card whose drawing is this site's own. Expectata: it opens
+    view.html?n=N, the viewer, where the drawing can be panned and zoomed and its curves seen one at a time; the
+    viewer links to the bare SVG."""
+    cards = {int(c['n']): c for c in parse_page().cards}
+    return [f'n={n}: the card links to {cards[n]["links"]}' for n in VIEWED if f'view.html?n={n}' not in cards[n]['links']]
+
+
+@qual
+def qual_viewer_fit():
+    """Replicata: open view.html?n=N for every n it shows, in Chromium, WebKit and Firefox, in a 1200 by 800 window.
+    Expectata: the drawing's square page fits the window's shorter side, centred; each curve's line is as wide on
+    screen as the SVG's own stroke-width makes it at that size, and doesn't scale (vector-effect: non-scaling-stroke),
+    so lines keep that width when zoomed in and bundles of nearly parallel curves come apart."""
+    return browser('fit')
+
+
+@qual
+def qual_viewer_curves():
+    """Replicata: open view.html?n=7; click the first swatch, then the third, then the third again, then the
+    seventh; click the second and press Escape. Expectata: one swatch per curve, in its curve's colour. Each swatch
+    shows the curves up to and including its own, so that clicking them left to right adds the curves one at a time:
+    the first shows curve 0 alone (counting from 0, as the SVG's ids curve-0 to curve-6 do), the third curves 0 to 2,
+    clicking it again changes nothing, and the seventh, like Escape, shows all seven, as on opening. Exactly the
+    swatches of the curves shown are pressed (aria-pressed)."""
+    return browser('curves')
+
+
+@qual
+def qual_viewer_wheel():
+    """Replicata: in view.html?n=7, point at a spot and turn the wheel 400 pixels up; then hold ctrl and turn it 100
+    pixels down, which is how browsers report a trackpad pinch. Expectata: the drawing zooms in by a factor of e and
+    then out by e, both about the spot pointed at, which stays put."""
+    return browser('wheel')
+
+
+@qual
+def qual_viewer_drag():
+    """Replicata: in view.html?n=7, drag the drawing 120 pixels right and 80 down. Expectata: the point grabbed moves
+    with the pointer, ending under it; the scale doesn't change."""
+    return browser('drag')
+
+
+@qual
+def qual_viewer_pinch():
+    """Replicata: in view.html?n=7, put two fingers down 120 pixels apart and move one of them away from the other
+    until they are 240 apart. Expectata: the drawing zooms in by 2, the point under the finger that stayed put staying
+    under it."""
+    return browser('pinch')
+
+
+@qual
+def qual_viewer_dblclick():
+    """Replicata: in view.html?n=7, double-click a spot. Expectata: the drawing zooms in by 2 about that spot."""
+    return browser('dblclick')
+
+
+@qual
+def qual_viewer_buttons():
+    """Replicata: in view.html?n=7, click +, then − twice; drag; click the fit button. Expectata: + zooms in by 2
+    and − out by 2, about the window's centre; fit puts the drawing back as it was on opening."""
+    return browser('buttons')
+
+
+@qual
+def qual_viewer_keys():
+    """Replicata: in view.html?n=7, press +, then ctrl+0 and cmd+0, then - twice, then 0, then the right arrow.
+    Expectata: + and - zoom in and out by 2 about the window's centre; 0 fits the drawing as on opening; ctrl+0 and
+    cmd+0, the browser's own zoom keys, do nothing to the drawing; the right arrow pans a tenth of the window's
+    shorter side to the right, so the point that was that far right of centre is now at the centre."""
+    return browser('keys')
+
+
+@qual
+def qual_viewer_limits():
+    """Replicata: in view.html?n=7, click − six times; then turn the wheel far up. Expectata: zooming out stops at
+    half the size that fits the window, and zooming in stops at 1000 times it (where a pixel is about a twentieth of
+    a unit of the SVG's 51200-unit page, still coarser than the three decimals the SVG gives coordinates to)."""
+    return browser('limits')
+
+
+@qual
+def qual_viewer_resize():
+    """Replicata: in view.html?n=7 in a 1200 by 800 window, click +, then make the window 800 by 600. Expectata: the
+    point at the window's centre stays at its centre and the drawing keeps its size relative to the window's shorter
+    side (twice the size that fits)."""
+    return browser('resize')
+
+
+@qual
+def qual_viewer_links():
+    """Replicata: open view.html?n=7. Expectata: its title is "7 · " then the list's title; the back arrow links to
+    index.html#n7, the card on the list; and the SVG link to img/venn-07.svg, the bare file."""
+    return browser('links')
+
+
+@qual
+def qual_viewer_loading():
+    """Replicata: open view.html?n=7 while img/venn-07.svg is slow to arrive. Expectata: meanwhile the viewer shows
+    img/venn-07.png, the card's picture, which pans and zooms like the drawing, and seven swatches, all disabled;
+    once the SVG arrives, its seven curves replace the picture and the swatches work."""
+    return browser('loading')
+
+
+@qual
+def qual_viewer_error():
+    """Replicata: open view.html?n=4, for which there is no drawing. Expectata: a visible error saying that
+    img/venn-04.svg could not be loaded, with the server's answer (404), and four swatches, all disabled."""
+    return browser('error')
+
+
+@qual
+def qual_viewer_phone():
+    """Replicata: open view.html?n=17 on a phone, a 375 by 667 window. Expectata: the controls (the back arrow and
+    number, the SVG link, the 17 swatches and the zoom buttons) all fit in the window without overlapping each other,
+    and the page doesn't scroll."""
+    return browser('phone')
 
 
 @qual

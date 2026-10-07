@@ -39,7 +39,8 @@ DRAWN = (2, 3, 5, 7, 11, 13, 17, 19)
 
 # The alpha of each monotone diagram shown, copied from the papers named.
 ALPHA = {
-    # two circles: a half turn has one crossing, which is rho = 1, with alpha and delta empty (the papers start at 3)
+    # two circles: a half turn has one crossing, which is rho = 1, with alpha and delta empty (worked out here; the
+    # papers give no crossing sequence for n = 2)
     2: [],
     # three circles (Venn 1880) and Grunbaum's five ellipses (1975): alpha is empty (Mamakani & Ruskey 2014, Sec. 2)
     3: [],

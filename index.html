@@ -40,6 +40,9 @@
   header { max-width: 40rem; padding: 3.5rem 0 2rem; }
   h1 { font-weight: 500; font-size: clamp(2rem, 5vw, 2.9rem); line-height: 1.1; margin: 0 0 1.2rem; }
   header p { margin: 0 0 0.9rem; }
+  blockquote { margin: 0 0 1.4rem; }
+  blockquote p { margin: 0; font-style: italic; }
+  blockquote p + p { font-style: normal; color: var(--muted); font-size: 1rem; }
   nav { display: flex; flex-wrap: wrap; gap: 0.2rem 1.4rem; margin-top: 1.6rem; }
   nav a { font-size: 2rem; line-height: 1.2; text-decoration: none; }
   nav a:hover { text-decoration: underline; }
@@ -78,6 +81,10 @@
 <main>
 <header>
   <h1>Diagrammata Venniana Symmetrica</h1>
+  <blockquote>
+    <p>“No one in the long history of mathematics ever became better known for less.”</p>
+    <p>— William Dunham, <i>The Mathematical Universe</i> (1994), p. 262</p>
+  </blockquote>
   <p>An <i>n</i>-curve Venn diagram has one connected region for each of the 2<sup><i>n</i></sup> ways a point can be inside or outside each curve. 
     It's "simple" if no three curves meet at a point, and in that case it has 2<sup><i>n</i></sup>&nbsp;−&nbsp;2 crossings. 
     It's symmetric if rotating it by 1/n of a turn maps it onto itself.</p>
@@ -94,9 +101,9 @@
 <figure>
   <figcaption>
     <h2>2</h2>
-    <p>Two circles: Venn 1880. 4 regiones, 2 intersectiones.</p>
+    <p>Two circles. 4 regions, 2 intersections.</p>
   </figcaption>
-  <a class="pic" href="img/venn-02.svg"><img class="latin" src="img/venn-02.png" width="1600" height="1600" alt="Two circles forming a Venn diagram"></a>
+  <a class="pic" href="view.html?n=2"><img src="img/venn-02.png" width="1600" height="1600" alt="Two circles forming a Venn diagram"></a>
 </figure>
 </section>
 
@@ -104,9 +111,9 @@
 <figure>
   <figcaption>
     <h2>3</h2>
-    <p>Three circles: Venn 1880. 8 regions, 6 crossings.</p>
+    <p>Three circles (Venn 1880). 8 regions, 6 crossings.</p>
   </figcaption>
-  <a class="pic" href="img/venn-03.svg"><img src="img/venn-03.png" width="1600" height="1600" alt="Three circles forming a Venn diagram"></a>
+  <a class="pic" href="view.html?n=3"><img src="img/venn-03.png" width="1600" height="1600" alt="Three circles forming a Venn diagram"></a>
 </figure>
 </section>
 
@@ -114,9 +121,9 @@
 <figure>
   <figcaption>
     <h2>5</h2>
-    <p>Five congruent ellipses: Grünbaum 1975. 32 regions, 30 crossings.</p>
+    <p>Five congruent ellipses (Grünbaum 1975). 32 regions, 30 crossings.</p>
   </figcaption>
-  <a class="pic" href="img/venn-05.svg"><img src="img/venn-05.png" width="1600" height="1600" loading="lazy" alt="Five congruent ellipses forming a symmetric Venn diagram"></a>
+  <a class="pic" href="view.html?n=5"><img src="img/venn-05.png" width="1600" height="1600" loading="lazy" alt="Five congruent ellipses forming a symmetric Venn diagram"></a>
 </figure>
 </section>
 
@@ -124,9 +131,11 @@
 <figure>
   <figcaption>
     <h2>7</h2>
-    <p>“Hamilton”, discovered and named by A. W. F. Edwards (1998); one of the 23 simple monotone symmetric 7-curve diagrams (Mamakani, Myrvold, Ruskey 2012). 128 regions, 126 crossings.</p>
+    <p>“Hamilton” (A. W. F. Edwards 1992); one of the 23 simple monotone symmetric 7-curve diagrams (Cao, Mamakani, Ruskey 2010; Mamakani, Myrvold, Ruskey 2012). 
+      <span>The first simple symmetric 7-curve diagrams to be published were Grünbaum's (1992); Henderson said in 1963 that he had found one, but it was never published and was lost.</span> 
+      128 regions, 126 crossings.</p>
   </figcaption>
-  <a class="pic" href="img/venn-07.svg"><img src="img/venn-07.png" width="1600" height="1600" loading="lazy" alt="Symmetric Venn diagram with 7 curves (Hamilton)"></a>
+  <a class="pic" href="view.html?n=7"><img src="img/venn-07.png" width="1600" height="1600" loading="lazy" alt="Symmetric Venn diagram with 7 curves (Hamilton)"></a>
 </figure>
 </section>
 
@@ -136,7 +145,7 @@
     <h2>11</h2>
     <p>“Newroz”, the first simple symmetric 11-curve Venn diagram (Mamakani and Ruskey 2012). 2048 regions, 2046 crossings.</p>
   </figcaption>
-  <a class="pic" href="img/venn-11.svg"><img src="img/venn-11.png" width="1600" height="1600" loading="lazy" alt="Symmetric Venn diagram with 11 curves (Newroz)"></a>
+  <a class="pic" href="view.html?n=11"><img src="img/venn-11.png" width="1600" height="1600" loading="lazy" alt="Symmetric Venn diagram with 11 curves (Newroz)"></a>
 </figure>
 </section>
 
@@ -144,9 +153,9 @@
 <figure>
   <figcaption>
     <h2>13</h2>
-    <p>The first simple symmetric 13-curve Venn diagram (Mamakani and Ruskey 2014). 8192 regions, 8190 crossings.</p>
+    <p>The first simple symmetric 13-curve Venn diagram (Mamakani 2013; Mamakani and Ruskey 2014). 8192 regions, 8190 crossings.</p>
   </figcaption>
-  <a class="pic" href="img/venn-13.svg"><img src="img/venn-13.png" width="1600" height="1600" loading="lazy" alt="Symmetric Venn diagram with 13 curves"></a>
+  <a class="pic" href="view.html?n=13"><img src="img/venn-13.png" width="1600" height="1600" loading="lazy" alt="Symmetric Venn diagram with 13 curves"></a>
 </figure>
 </section>
 
@@ -157,7 +166,7 @@
     <p>One of four simple symmetric 17-curve Venn diagrams that Claude and Codex found under Chris Dzoba's direction in September 2026; this one (venn17-local-c3-s2) was verified in Lean 4 by Justin Grimes. 
       131,072 regions, 131,070 crossings.</p>
   </figcaption>
-  <a class="pic" href="img/venn-17.svg"><img src="img/venn-17.png" width="1600" height="1600" loading="lazy" alt="Symmetric Venn diagram with 17 curves"></a>
+  <a class="pic" href="view.html?n=17"><img src="img/venn-17.png" width="1600" height="1600" loading="lazy" alt="Symmetric Venn diagram with 17 curves"></a>
 </figure>
 </section>
 
@@ -177,7 +186,7 @@
   <figcaption>
     <h2>23</h2>
     <p>Six simple symmetric 23-curve Venn diagrams were found on October 5 and 6, 2026 (Dzoba). 
-      As of October 6, 2026 their certificates, 889 MB each, weren't publicly available. 
+      <span>Their certificates, 889 MB each, were published on October 6, 2026.</span> 
       8,388,608 regions, 8,388,606 crossings.</p>
   </figcaption>
   <a class="pic" href="https://github.com/dzoba/venn17#23-curves"><img src="img/pending.svg" width="1600" height="1600" loading="lazy" alt="Not drawn yet"></a>
@@ -190,13 +199,17 @@
     <li>J. Venn, “On the Diagrammatic and Mechanical Representation of Propositions and Reasonings”, <i>Philosophical Magazine</i> 10 (1880) 1–18.</li>
     <li>D. W. Henderson, “Venn diagrams for more than four classes”, <i>American Mathematical Monthly</i> 70 (1963) 424–426.</li>
     <li>B. Grünbaum, “Venn diagrams and independent families of sets”, <i>Mathematics Magazine</i> 48 (1975) 12–23.</li>
+    <li>B. Grünbaum, “Venn diagrams II”, <i>Geombinatorics</i> 2 (1992) 25–32.</li>
     <li>A. W. F. Edwards, “Seven-set Venn diagrams with rotational and polar symmetry”, <i>Combinatorics, Probability and Computing</i> 7 (1998) 149–152.</li>
     <li>J. Griggs, C. E. Killian, C. D. Savage, <a href="https://www.combinatorics.org/ojs/index.php/eljc/article/view/v11i1r2">“Venn Diagrams and Symmetric Chain Decompositions in the Boolean Lattice”</a>, <i>Electronic Journal of Combinatorics</i> 11 (2004) R2.</li>
+    <li>A. W. F. Edwards, <i>Cogwheels of the Mind</i>, Johns Hopkins University Press (2004).</li>
     <li>S. Wagon, P. Webb, “Venn symmetry and prime numbers: a seductive proof revisited”, <i>American Mathematical Monthly</i> 115 (2008) 645–648.</li>
+    <li>T. Cao, K. Mamakani, F. Ruskey, “Symmetric monotone Venn diagrams with seven curves”, <i>Fun with Algorithms</i>, Lecture Notes in Computer Science 6099 (2010) 331–342.</li>
     <li>K. Mamakani, W. Myrvold, F. Ruskey, “Generating simple convex Venn diagrams”, <i>Journal of Discrete Algorithms</i> 16 (2012) 270–286.</li>
     <li>K. Mamakani, F. Ruskey, <a href="https://arxiv.org/abs/1207.6452">“A New Rose : The First Simple Symmetric 11-Venn Diagram”</a>, arXiv:1207.6452 (2012).</li>
+    <li>K. Mamakani, <a href="http://hdl.handle.net/1828/4709">“Searching for Simple Symmetric Venn Diagrams”</a>, PhD thesis, University of Victoria (2013).</li>
     <li>K. Mamakani, F. Ruskey, <a href="https://link.springer.com/article/10.1007/s00454-014-9605-6">“New Roses: Simple Symmetric Venn Diagrams with 11 and 13 Curves”</a>, <i>Discrete &amp; Computational Geometry</i> 52 (2014) 71–87.</li>
-    <li>C. Dzoba, <a href="https://arxiv.org/abs/2609.26546">“Simple symmetric Venn diagrams with 17 and 19 curves”</a>, arXiv:2609.26546 (2026); <a href="https://github.com/dzoba/venn17">github.com/dzoba/venn17</a>.</li>
+    <li>C. Dzoba, <a href="https://arxiv.org/abs/2609.26546">“Simple symmetric Venn diagrams with 17, 19 and 23 curves”</a>, arXiv:2609.26546 (2026); <a href="https://github.com/dzoba/venn17">github.com/dzoba/venn17</a>.</li>
     <li>F. Ruskey, M. Weston, <a href="https://www.combinatorics.org/files/Surveys/ds5/VennEJC.html">“A Survey of Venn Diagrams”</a>, <i>Electronic Journal of Combinatorics</i>, Dynamic Survey DS5.</li>
   </ol>
   <p>The circles and ellipses (<i>n</i> = 2, 3, 5) are drawn geometrically. 
