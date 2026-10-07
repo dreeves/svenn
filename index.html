@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="la">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- TODO: page title: "Simple symmetric Venn diagrams" -->
+<title class="latin">Diagrammata Venniana simplicia symmetrica</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap">
+<style>
+  :root {
+    --paper: #ffffff;
+    --ink: #1d2433;
+    --muted: #5c6577;
+    --line: #e2e5ea;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--paper); color: var(--ink); }
+  body {
+    margin: 0;
+    font: 400 1.15rem/1.6 "EB Garamond", Garamond, Georgia, serif;
+    font-variant-numeric: oldstyle-nums;
+    font-feature-settings: "locl" 0;   /* EB Garamond's Latin locl turns every u into v, names included */
+  }
+  a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+  a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+  main { max-width: 74rem; margin: 0 auto; padding: 0 1rem 4rem; }
+  header { max-width: 40rem; padding: 3.5rem 0 2rem; }
+  h1 { font-weight: 500; font-size: clamp(2rem, 5vw, 2.9rem); line-height: 1.1; margin: 0 0 1.2rem; }
+  header p { margin: 0 0 0.9rem; }
+  nav { display: flex; flex-wrap: wrap; gap: 0.2rem 1.4rem; margin-top: 1.6rem; }
+  nav a { font-size: 2rem; line-height: 1.2; text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  .card { border-top: 1px solid var(--line); padding: 2.5rem 0; }
+  figure {
+    margin: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 15rem) minmax(0, 52rem);
+    gap: 1rem 3rem;
+    align-items: start;
+  }
+  figcaption { color: var(--muted); }
+  figcaption p { margin: 0; }
+  h2 {
+    font-weight: 400;
+    font-size: clamp(4rem, 11vw, 7rem);
+    line-height: 0.85;
+    margin: 0 0 1rem;
+    color: var(--ink);
+  }
+  sup { font-size: 0.7em; line-height: 0; }
+  .pic { display: block; }
+  .pic img { display: block; width: 100%; height: auto; }
+  footer { border-top: 1px solid var(--line); padding-top: 2rem; max-width: 46rem; font-size: 1rem; }
+  footer h2 { font-size: 1.5rem; line-height: 1.3; margin: 0 0 0.8rem; }
+  footer ol { padding-left: 1.4rem; margin: 0 0 2rem; }
+  footer li { margin-bottom: 0.45rem; }
+  @media (max-width: 760px) {
+    figure { grid-template-columns: minmax(0, 1fr); }
+    h2 { margin-bottom: 0.5rem; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <!-- TODO: heading: "Simple symmetric Venn diagrams" -->
+  <h1 class="latin">Diagrammata Venniana simplicia symmetrica</h1>
+  <!-- TODO: An n-curve Venn diagram has one connected region for each of the 2^n ways a point can be inside or outside each curve. It's simple if no three curves meet at a point, and then it has 2^n − 2 crossings. It's symmetric if rotating it by 1/n of a turn maps it onto itself. -->
+  <p class="latin">Diagramma Vennianum <i>n</i> curvarum pro unoquoque ex 2<sup><i>n</i></sup> modis, quibus punctum intra extrave singulas curvas iacere potest, unam regionem continuam habet. Simplex est, si nusquam tres curvae concurrunt, et tum 2<sup><i>n</i></sup>&nbsp;−&nbsp;2 intersectiones habet. Symmetricum est, si conversione unius <i>n</i>-tae partis circuli in se ipsum transit.</p>
+  <!-- TODO: A diagram can only be symmetric if n is prime (Henderson 1963; complete proof by Wagon and Webb 2008), and symmetric ones exist for every prime (Griggs, Killian and Savage 2004), but those aren't simple. Simple symmetric ones were known only up to n = 13 (Mamakani and Ruskey 2014) until Chris Dzoba, using Claude and Codex, found ones with 17 and 19 curves in September 2026 and with 23 in October. -->
+  <p class="latin">Symmetricum esse non potest nisi <i>n</i> numerus primus sit (Henderson 1963; demonstrationem plenam dederunt Wagon et Webb 2008), et pro quoque numero primo exstat (Griggs, Killian, Savage 2004), sed haec simplicia non sunt. Simplicia et symmetrica usque ad <i>n</i>&nbsp;=&nbsp;13 tantum nota erant (Mamakani et Ruskey 2014), donec Chris Dzoba, Claude et Codex adhibitis, mense Septembri 2026 diagrammata 17 et 19 curvarum, mense Octobri 23 curvarum invenit.</p>
+  <!-- TODO: Below is one diagram for each prime. Click a picture to open it as a zoomable vector image. -->
+  <p class="latin">Infra unum diagramma pro quoque numero primo ostenditur. Imagine pressa forma vectoria aperitur, quae sine fine augeri potest.</p>
+  <nav>
+    <a href="#n3">3</a><a href="#n5">5</a><a href="#n7">7</a><a href="#n11">11</a><a href="#n13">13</a><a href="#n17">17</a><a href="#n19">19</a><a href="#n23">23</a>
+  </nav>
+</header>
+
+<section class="card" id="n3" data-n="3" data-regions="8" data-crossings="6">
+<figure>
+  <figcaption>
+    <h2>3</h2>
+    <!-- TODO: Three circles: Venn 1880. 8 regions, 6 crossings. -->
+    <p class="latin">Tres circuli: Venn 1880. 8 regiones, 6 intersectiones.</p>
+  </figcaption>
+  <a class="pic" href="img/venn-03.svg"><!-- TODO: alt text: "Three circles forming a Venn diagram" --><img class="latin" src="img/venn-03.png" width="1600" height="1600" alt="Tres circuli diagramma Vennianum efficientes"></a>
+</figure>
+</section>
+
+<section class="card" id="n5" data-n="5" data-regions="32" data-crossings="30">
+<figure>
+  <figcaption>
+    <h2>5</h2>
+    <!-- TODO: Five congruent ellipses: Grünbaum 1975. 32 regions, 30 crossings. -->
+    <p class="latin">Quinque ellipses congruentes: Grünbaum 1975. 32 regiones, 30 intersectiones.</p>
+  </figcaption>
+  <a class="pic" href="img/venn-05.svg"><!-- TODO: alt text: "Five congruent ellipses forming a symmetric Venn diagram" --><img class="latin" src="img/venn-05.png" width="1600" height="1600" loading="lazy" alt="Quinque ellipses congruentes diagramma Vennianum symmetricum efficientes"></a>
+</figure>
+</section>
+
+<section class="card" id="n7" data-n="7" data-regions="128" data-crossings="126">
+<figure>
+  <figcaption>
+    <h2>7</h2>
+    <!-- TODO: "Hamilton", discovered and named by A. W. F. Edwards (1998); one of the 23 simple monotone symmetric 7-curve diagrams (Mamakani, Myrvold, Ruskey 2012). 128 regions, 126 crossings. -->
+    <p class="latin">“Hamilton”, ab A. W. F. Edwards inventum et nominatum (1998), unum e 23 diagrammatibus simplicibus symmetricis monotonis septem curvarum (Mamakani, Myrvold, Ruskey 2012). 128 regiones, 126 intersectiones.</p>
+  </figcaption>
+  <a class="pic" href="img/venn-07.svg"><!-- TODO: alt text: "Simple symmetric Venn diagram with 7 curves (Hamilton)" --><img class="latin" src="img/venn-07.png" width="1600" height="1600" loading="lazy" alt="Diagramma Vennianum simplex symmetricum septem curvarum (Hamilton)"></a>
+</figure>
+</section>
+
+<section class="card" id="n11" data-n="11" data-regions="2048" data-crossings="2046">
+<figure>
+  <figcaption>
+    <h2>11</h2>
+    <!-- TODO: "Newroz", the first simple symmetric 11-curve diagram: Mamakani and Ruskey 2012. 2048 regions, 2046 crossings. -->
+    <p class="latin">“Newroz”, primum diagramma simplex symmetricum undecim curvarum: Mamakani et Ruskey 2012. 2048 regiones, 2046 intersectiones.</p>
+  </figcaption>
+  <a class="pic" href="img/venn-11.svg"><!-- TODO: alt text: "Simple symmetric Venn diagram with 11 curves (Newroz)" --><img class="latin" src="img/venn-11.png" width="1600" height="1600" loading="lazy" alt="Diagramma Vennianum simplex symmetricum undecim curvarum (Newroz)"></a>
+</figure>
+</section>
+
+<section class="card" id="n13" data-n="13" data-regions="8192" data-crossings="8190">
+<figure>
+  <figcaption>
+    <h2>13</h2>
+    <!-- TODO: The first simple symmetric 13-curve diagram: Mamakani and Ruskey 2014. 8192 regions, 8190 crossings. -->
+    <p class="latin">Primum diagramma simplex symmetricum tredecim curvarum: Mamakani et Ruskey 2014. 8192 regiones, 8190 intersectiones.</p>
+  </figcaption>
+  <a class="pic" href="img/venn-13.svg"><!-- TODO: alt text: "Simple symmetric Venn diagram with 13 curves" --><img class="latin" src="img/venn-13.png" width="1600" height="1600" loading="lazy" alt="Diagramma Vennianum simplex symmetricum tredecim curvarum"></a>
+</figure>
+</section>
+
+<section class="card" id="n17" data-n="17" data-regions="131072" data-crossings="131070">
+<figure>
+  <figcaption>
+    <h2>17</h2>
+    <!-- TODO: One of four 17-curve diagrams that Claude and Codex found under Chris Dzoba's direction in September 2026; this one (venn17-local-c3-s2) was verified in Lean 4 by Justin Grimes. 131,072 regions, 131,070 crossings. -->
+    <p class="latin">Unum e quattuor diagrammatibus septendecim curvarum, quae Claude et Codex duce Chris Dzoba mense Septembri 2026 invenerunt; hoc (venn17-local-c3-s2) Justin Grimes in Lean 4 probavit. 131&#8239;072 regiones, 131&#8239;070 intersectiones.</p>
+  </figcaption>
+  <a class="pic" href="img/venn-17.svg"><!-- TODO: alt text: "Simple symmetric Venn diagram with 17 curves" --><img class="latin" src="img/venn-17.png" width="1600" height="1600" loading="lazy" alt="Diagramma Vennianum simplex symmetricum septendecim curvarum"></a>
+</figure>
+</section>
+
+<section class="card" id="n19" data-n="19" data-regions="524288" data-crossings="524286">
+<figure>
+  <figcaption>
+    <h2>19</h2>
+    <!-- TODO: One of twelve 19-curve diagrams found in September 2026 the same way; this one (venn19-closure-s196002) is also verified in Lean 4. 524,288 regions, 524,286 crossings. -->
+    <p class="latin">Unum e duodecim diagrammatibus undeviginti curvarum eodem modo mense Septembri 2026 inventis; hoc quoque (venn19-closure-s196002) in Lean 4 probatum est. 524&#8239;288 regiones, 524&#8239;286 intersectiones.</p>
+  </figcaption>
+  <a class="pic" href="img/venn-19.svg"><!-- TODO: alt text: "Simple symmetric Venn diagram with 19 curves" --><img class="latin" src="img/venn-19.png" width="1600" height="1600" loading="lazy" alt="Diagramma Vennianum simplex symmetricum undeviginti curvarum"></a>
+</figure>
+</section>
+
+<section class="card" id="n23" data-n="23" data-regions="8388608" data-crossings="8388606">
+<figure>
+  <figcaption>
+    <h2>23</h2>
+    <!-- TODO: Six 23-curve diagrams were found on October 5 and 6, 2026 (Dzoba). As of October 6, 2026 their certificates, 889 MB each, weren't publicly available yet, so nothing is drawn here. 8,388,608 regions, 8,388,606 crossings. -->
+    <p class="latin">Sex diagrammata viginti trium curvarum diebus 5 et 6 Octobris 2026 inventa sunt (Dzoba). Certificata eorum, singula 889 MB, die 6 Octobris 2026 nondum publice praesto erant, itaque hic nihil delineatum est. 8&#8239;388&#8239;608 regiones, 8&#8239;388&#8239;606 intersectiones.</p>
+  </figcaption>
+  <a class="pic" href="https://github.com/dzoba/venn17#23-curves"><!-- TODO: alt text: "Not drawn yet" --><img class="latin" src="img/pending.svg" width="1600" height="1600" loading="lazy" alt="Nondum delineatum"></a>
+</figure>
+</section>
+
+<footer>
+  <!-- TODO: heading: "Sources" -->
+  <h2 class="latin">Fontes</h2>
+  <ol>
+    <li>J. Venn, “On the Diagrammatic and Mechanical Representation of Propositions and Reasonings”, <i>Philosophical Magazine</i> 10 (1880) 1–18.</li>
+    <li>D. W. Henderson, “Venn diagrams for more than four classes”, <i>American Mathematical Monthly</i> 70 (1963) 424–426.</li>
+    <li>B. Grünbaum, “Venn diagrams and independent families of sets”, <i>Mathematics Magazine</i> 48 (1975) 12–23.</li>
+    <li>A. W. F. Edwards, “Seven-set Venn diagrams with rotational and polar symmetry”, <i>Combinatorics, Probability and Computing</i> 7 (1998) 149–152.</li>
+    <li>J. Griggs, C. E. Killian, C. D. Savage, <a href="https://www.combinatorics.org/ojs/index.php/eljc/article/view/v11i1r2">“Venn Diagrams and Symmetric Chain Decompositions in the Boolean Lattice”</a>, <i>Electronic Journal of Combinatorics</i> 11 (2004) R2.</li>
+    <li>S. Wagon, P. Webb, “Venn symmetry and prime numbers: a seductive proof revisited”, <i>American Mathematical Monthly</i> 115 (2008) 645–648.</li>
+    <li>K. Mamakani, W. Myrvold, F. Ruskey, “Generating simple convex Venn diagrams”, <i>Journal of Discrete Algorithms</i> 16 (2012) 270–286.</li>
+    <li>K. Mamakani, F. Ruskey, <a href="https://arxiv.org/abs/1207.6452">“A New Rose : The First Simple Symmetric 11-Venn Diagram”</a>, arXiv:1207.6452 (2012).</li>
+    <li>K. Mamakani, F. Ruskey, <a href="https://link.springer.com/article/10.1007/s00454-014-9605-6">“New Roses: Simple Symmetric Venn Diagrams with 11 and 13 Curves”</a>, <i>Discrete &amp; Computational Geometry</i> 52 (2014) 71–87.</li>
+    <li>C. Dzoba, <a href="https://arxiv.org/abs/2609.26546">“Simple symmetric Venn diagrams with 17 and 19 curves”</a>, arXiv:2609.26546 (2026); <a href="https://github.com/dzoba/venn17">github.com/dzoba/venn17</a>.</li>
+    <li>F. Ruskey, M. Weston, <a href="https://www.combinatorics.org/files/Surveys/ds5/VennEJC.html">“A Survey of Venn Diagrams”</a>, <i>Electronic Journal of Combinatorics</i>, Dynamic Survey DS5.</li>
+  </ol>
+  <!-- TODO: The circles and ellipses (n = 3, 5) are drawn geometrically. The other diagrams are drawn from their certificates with Chris Dzoba's plotter (MIT license). The 17- and 19-curve certificates come from github.com/dzoba/venn17 (CC BY 4.0); the others are computed from crossing sequences that Mamakani and Ruskey published. Every drawing is checked against its certificate. -->
+  <p class="latin">Circuli et ellipses (<i>n</i> = 3, 5) geometrice delineati sunt. Cetera diagrammata ex certificatis suis instrumento Chris Dzoba (licentia MIT) delineata sunt. Certificata septendecim et undeviginti curvarum ex github.com/dzoba/venn17 sumpta sunt (CC BY 4.0), cetera ex seriebus intersectionum a Mamakani et Ruskey editis computata. Quodque diagramma cum certificato suo comparatum est.</p>
+  <!-- TODO: link texts: "Source code of this page" and "the conversation it was built in" -->
+  <p class="latin"><a href="https://github.com/dreeves/svenn">Fons huius paginae</a>; <a href="sourcery.html">colloquium unde orta est</a>.</p>
+</footer>
+</main>
+</body>
+</html>

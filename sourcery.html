@@ -1,0 +1,531 @@
+<!doctype html>
+<!-- Fasciculus hic a sourcery generatus est, numquam manu scriptus.
+     Memoriam dialogi ipse fert, quam generatio proxima legit atque
+     superscribit. Noli emendare. -->
+<html lang="und">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%F0%9F%90%9D%3C/text%3E%3C/svg%3E">
+<meta name="description" content="11 prompts · 2026-10-06 · +1,058 −122">
+<meta property="og:title" content="svenn">
+<meta property="og:description" content="11 prompts · 2026-10-06 · +1,058 −122">
+<title>svenn</title>
+<style>
+/* Beeminder hive: honey paper by day, warm black by night, goldenrod
+   accents throughout. Light-mode goldenrod is darkened for text contrast;
+   dark mode gets the full #FFB300. */
+:root {
+  color-scheme: light dark;
+  --bg: #faf0d8;
+  --ink: #1c1508;
+  --muted: #77673f;
+  --faint: #a8945e;
+  --line: #eadbb4;
+  --reply-bg: #f4e9cf;
+  --reply-ink: #4a3f22;
+  --accent: #a97b00;
+  --stripe: #ffb300;
+  /* Diffstat mark pair, teal for added and red for deleted, validated per
+     mode against its page surface (CVD-simulated ΔE >= 10, contrast >= 3:1;
+     a plain green fails deutan/protan separation against these reds). */
+  --diff-add: #00785a;
+  --diff-del: #cf222e;
+  /* Provider identity quartet for the exchange edge stripe and meta-line
+     chip, validated per mode against its page surface: within the quartet
+     the worst CVD-simulated pair is 8.7 light / 7.2 dark (both inside the
+     original trio; the olive's own worst pair is 11.7 / 13.6), normal-vision
+     ΔE >= 16.9, contrast >= 3:1. Against the diffstat pair the olive sits
+     6.3 / 6.5 under simulation — the 6–8 band that is legal only with
+     secondary encoding, which these marks have: a different mark class, and
+     the agent's name beside every chip. Identity never rides on color
+     alone. */
+  --claude: #b02777;
+  --codex: #076f9e;
+  --copilot: #6a2fc2;
+  --antigravity: #656902;
+  --measure: 44rem;
+  --serif: "Iowan Old Style", Charter, Georgia, "Times New Roman", serif;
+  --sans: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16130f;
+    --ink: #ece2cc;
+    --muted: #a3946f;
+    --faint: #5f5540;
+    --line: #2d2718;
+    --reply-bg: #1f1a12;
+    --reply-ink: #c9bc9e;
+    --accent: #ffb300;
+    --stripe: #ffb300;
+    --diff-add: #1fa179;
+    --diff-del: #f85149;
+    --claude: #d84f97;
+    --codex: #1a94b4;
+    --copilot: #8a75f0;
+    --antigravity: #8b8806;
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0;
+  border-top: 4px solid var(--stripe);
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.6;
+  text-rendering: optimizeLegibility;
+}
+main {
+  width: min(calc(100% - 2.5rem), var(--measure));
+  margin: 0 auto;
+  padding: 5rem 0 8rem;
+}
+.masthead { padding-bottom: 2rem; }
+.generator {
+  margin: 0 0 1.1rem;
+  font-family: var(--sans);
+  font-size: .68rem;
+  letter-spacing: .06em;
+  color: var(--faint);
+}
+.generator a { color: inherit; text-decoration: none; }
+.generator a:hover { color: var(--accent); text-decoration: underline; }
+h1 {
+  margin: 0;
+  font-size: clamp(1.9rem, 5.5vw, 2.9rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.deck, .repo-path {
+  margin: .6rem 0 0;
+  color: var(--faint);
+  font-family: var(--sans);
+  font-size: .74rem;
+  letter-spacing: .03em;
+  font-variant-numeric: tabular-nums;
+}
+.repo-path { font-family: var(--mono); font-size: .7rem; overflow-wrap: anywhere; }
+.repo-path a { color: var(--muted); text-decoration: none; }
+.repo-path a:hover { color: var(--accent); text-decoration: underline; }
+.controls {
+  margin: .9rem 0 0;
+  font-family: var(--sans);
+  font-size: .7rem;
+  letter-spacing: .04em;
+  color: var(--faint);
+}
+.controls a { color: var(--muted); text-decoration: none; }
+.controls a:hover { color: var(--accent); text-decoration: underline; }
+/* Minimap: the dialog at a glance, added lines above the midline and
+   deleted below, one clickable sliver per prompt. */
+.minimap { display: block; height: 48px; margin: 1.6rem 0 0; }
+.minimap .hit { fill: transparent; }
+.minimap .add { fill: var(--diff-add); }
+.minimap .del { fill: var(--diff-del); }
+.minimap .nil { fill: var(--line); }
+.minimap a:hover .hit { fill: color-mix(in srgb, var(--accent) 20%, transparent); }
+/* The reading-progress rail, the device Asterisk magazine runs down its
+   left margin: a goldenrod column — the top stripe's vertical sibling —
+   fixed to the viewport's left edge, its height the fraction of the page
+   scrolled past, invisible until the reader has actually set off (the
+   script adds .show past 300px of scroll). One tick per day header hangs
+   on the same percent scale, so the bar's tip touches a day's tick at the
+   exact moment that day reaches the top of the viewport; a tick's label
+   appears on hover and clicking it jumps to the day. The bar's width
+   cedes continuously as the viewport narrows toward the text column, and
+   below 54rem the marks leave entirely. */
+#progress .progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: clamp(6px, calc((100vw - var(--measure)) / 2 - 12px), 32px);
+  height: 0;
+  opacity: 0;
+  background: var(--stripe);
+  transition: opacity .1s linear;
+  z-index: 10;
+}
+#progress .daymark {
+  position: fixed;
+  left: 0;
+  z-index: 11;
+  display: flex;
+  margin-top: -12px;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: .65rem;
+  letter-spacing: .04em;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  transform: translateX(-100%);
+  transition: transform .2s ease;
+}
+#progress .tick {
+  width: 46px;
+  height: 12px;
+  border-bottom: 1px solid var(--ink);
+}
+#progress .text {
+  margin-left: .5rem;
+  padding: .1rem .4rem;
+  border: 1px solid var(--line);
+  border-radius: .3rem;
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity .2s ease-in;
+}
+#progress .daymark:hover .text { opacity: 1; }
+#progress.show .progress-bar { opacity: 1; }
+#progress.show .daymark { transform: none; }
+@media (max-width: 54rem) {
+  #progress .daymark { display: none; }
+}
+::selection { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+summary a.anchor { color: inherit; text-decoration: none; }
+summary a.anchor:hover { text-decoration: underline; }
+.exchange:target {
+  background: var(--reply-bg);
+  border-radius: .45rem;
+  padding: 1.1rem 1.25rem;
+  margin: 2.6rem -1.25rem 0;
+}
+.day {
+  clear: both;
+  margin: 3.8rem 0 0;
+  padding-bottom: .4rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  color: var(--accent);
+  font-family: var(--sans);
+  font-size: .68rem;
+  font-weight: 600;
+  letter-spacing: .14em;
+  font-variant-numeric: tabular-nums;
+}
+.exchange { margin: 2.6rem 0 0; clear: both; border-left: 3px solid var(--provider); padding-left: 0.85rem; }
+.exchange.claude { --provider: var(--claude); }
+.exchange.codex { --provider: var(--codex); }
+.exchange.copilot { --provider: var(--copilot); }
+.exchange.antigravity { --provider: var(--antigravity); }
+/* The prompt's diffstat floats right of the prompt's first lines. Numbers
+   wear the metadata ink; polarity lives in the blocks (and in the signs and
+   the fixed added-first order). */
+.diffstat {
+  float: right;
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  margin: .25rem 0 .5rem 1.1rem;
+  color: var(--faint);
+  font-family: var(--sans);
+  font-size: .68rem;
+  letter-spacing: .05em;
+  font-variant-numeric: tabular-nums;
+}
+.diffstat .blocks { display: inline-flex; gap: 2px; }
+.diffstat .blocks span { width: 7px; height: 7px; border-radius: 2px; }
+.diffstat .add { background: var(--diff-add); }
+.diffstat .del { background: var(--diff-del); }
+.diffstat .nil { background: var(--line); }
+pre.prompt {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+  font: inherit;
+  font-size: 1.06rem;
+  line-height: 1.62;
+}
+.attachments {
+  margin-top: .75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+.attachments img {
+  max-width: 100%;
+  max-height: 20rem;
+  border: 1px solid var(--line);
+  border-radius: .3rem;
+}
+details { margin: .55rem 0 0; }
+summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .6rem;
+  width: fit-content;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  color: var(--faint);
+  font-family: var(--sans);
+  font-size: .68rem;
+  letter-spacing: .05em;
+  font-variant-numeric: tabular-nums;
+}
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: "▸";
+  color: var(--accent);
+  font-size: .62rem;
+  transition: transform .12s ease;
+}
+details[open] > summary::before { transform: rotate(90deg); }
+summary:hover { color: var(--muted); }
+/* The agent's marks in the meta line: a small square chip wearing the
+   provider color (the same hue as the edge stripe) and the agent's name a
+   step louder than the rest of the line — promoted ink, never the mark
+   color, so the reading survives any color deficiency. */
+.chip { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--provider); }
+.agent { color: var(--muted); font-weight: 600; }
+/* INVIOLABLE: machine-generated prose renders only inside a .machine
+   container, in the phosphor-terminal style — monospace green on
+   near-black, in both color schemes — for maximal distinction from the
+   human's serif. The containers are .reply (agent replies) and .ballot
+   (multiple-choice questions the agent posed and the option labels it
+   wrote, including the ones the human picked). Machine styling and
+   collapsing are separate rules: .reply also hides behind the closed
+   disclosure, while .ballot is deliberately default-visible — collapsing
+   it would orphan the human's choice — but stays in phosphor. */
+.machine {
+  --m-bg: #060d08;
+  --m-ink: #56dd7f;
+  --m-bright: #8dffab;
+  --m-dim: #2f8a4f;
+  --m-line: #1c4b2d;
+  font-family: var(--mono);
+  background: var(--m-bg);
+  color: var(--m-ink);
+}
+.ballot {
+  clear: right; /* its filled box must not run under a floated diffstat */
+  margin: 1rem 0 .6rem;
+  padding: .65rem .85rem;
+  border-radius: .3rem;
+  font-size: .8rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ballot-question {
+  color: var(--m-dim);
+  font-size: .74rem;
+  margin-bottom: .35rem;
+  white-space: pre-wrap;
+}
+.ballot .option { color: var(--m-dim); }
+.ballot .option.picked { color: var(--m-bright); }
+.exchange > .ballot:first-child { margin-top: 0; }
+.reply {
+  margin-top: .8rem;
+  padding: 1rem 1.15rem;
+  border-radius: .35rem;
+  font-size: .82rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.reply > :first-child { margin-top: 0; }
+.reply > :last-child { margin-bottom: 0; }
+.reply p { margin: .8rem 0; }
+.reply h2, .reply h3, .reply h4, .reply h5, .reply h6 {
+  margin: 1.3rem 0 .55rem;
+  line-height: 1.25;
+}
+.reply h2 { font-size: 1.05rem; }
+.reply h3, .reply h4, .reply h5, .reply h6 { font-size: .95rem; }
+.reply ul, .reply ol { margin: .75rem 0; padding-left: 1.4rem; }
+.reply li + li { margin-top: .25rem; }
+.reply blockquote {
+  margin: .9rem 0;
+  padding-left: .9rem;
+  border-left: 2px solid var(--m-line);
+  color: var(--m-dim);
+}
+.reply code { font-size: .95em; }
+.reply :not(pre) > code {
+  padding: .1em .3em;
+  border: 1px solid var(--m-line);
+  border-radius: .25rem;
+}
+.reply pre.code {
+  margin: .9rem 0;
+  padding: .9rem 1rem;
+  overflow-x: auto;
+  white-space: pre;
+  border: 1px solid var(--m-line);
+  border-radius: .3rem;
+  background: #0a170e;
+}
+.reply a { color: var(--m-bright); }
+.reply.empty { font-style: italic; color: var(--m-dim); }
+@media print {
+  :root { --bg: white; --ink: black; --faint: #777; --muted: #555; --line: #bbb; --reply-bg: white; --reply-ink: #333; }
+  #progress { display: none; }
+  .machine { --m-bg: white; --m-ink: #14572e; --m-bright: #14572e; --m-dim: #4d7a5d; --m-line: #9dbfa8; background: white; border: 1px solid var(--m-line); }
+  .reply pre.code { background: white; }
+  main { width: 100%; padding: 0; }
+  .day { break-after: avoid; }
+  .exchange { break-inside: avoid; }
+  details > .reply { display: block !important; }
+  summary::before { content: ""; }
+}
+</style>
+</head>
+<body>
+<div id="progress">
+<div class="progress-bar" aria-hidden="true"></div>
+<nav class="daymarks" aria-label="Index dierum">
+<a class="daymark" href="#d2026-10-06"><span class="tick"></span><span class="text">2026-10-06 Tuesday</span></a>
+</nav>
+</div>
+<main>
+<header class="masthead">
+  <p class="generator"><a href="https://github.com/beeminder/sourcery">generated by sourcery</a></p>
+  <h1>svenn</h1>
+  <p class="deck">11 prompts · 2026-10-06 · +1,058 −122</p>
+  <p class="repo-path"><a href="https://github.com/dreeves/svenn">github.com/dreeves/svenn</a></p>
+  <p class="controls"><a href="#" data-omnia="open">expand all</a> · <a href="#" data-omnia="close">collapse all</a></p>
+  <svg class="minimap" viewBox="0 0 33 64" preserveAspectRatio="none" style="width:min(100%, 66px)" aria-label="Tabula dialogi, rogatio post rogationem"><a href="#p1"><title>15:21</title><rect class="hit" x="0" y="0" width="3" height="64"/><rect class="nil" x="0" y="31" width="2" height="2"/></a><a href="#p2"><title>15:32</title><rect class="hit" x="3" y="0" width="3" height="64"/><rect class="nil" x="3" y="31" width="2" height="2"/></a><a href="#p3"><title>15:33 +980 −80</title><rect class="hit" x="6" y="0" width="3" height="64"/><rect class="add" x="6" y="2" width="2" height="30"/><rect class="del" x="6" y="32" width="2" height="8.6"/></a><a href="#p4"><title>16:46</title><rect class="hit" x="9" y="0" width="3" height="64"/><rect class="nil" x="9" y="31" width="2" height="2"/></a><a href="#p5"><title>16:49</title><rect class="hit" x="12" y="0" width="3" height="64"/><rect class="nil" x="12" y="31" width="2" height="2"/></a><a href="#p6"><title>17:43</title><rect class="hit" x="15" y="0" width="3" height="64"/><rect class="nil" x="15" y="31" width="2" height="2"/></a><a href="#p7"><title>17:43</title><rect class="hit" x="18" y="0" width="3" height="64"/><rect class="nil" x="18" y="31" width="2" height="2"/></a><a href="#p8"><title>17:43</title><rect class="hit" x="21" y="0" width="3" height="64"/><rect class="nil" x="21" y="31" width="2" height="2"/></a><a href="#p9"><title>17:43 +73 −37</title><rect class="hit" x="24" y="0" width="3" height="64"/><rect class="add" x="24" y="23.8" width="2" height="8.2"/><rect class="del" x="24" y="32" width="2" height="5.8"/></a><a href="#p10"><title>18:08</title><rect class="hit" x="27" y="0" width="3" height="64"/><rect class="nil" x="27" y="31" width="2" height="2"/></a><a href="#p11"><title>18:11 +5 −5</title><rect class="hit" x="30" y="0" width="3" height="64"/><rect class="add" x="30" y="29.9" width="2" height="2.1"/><rect class="del" x="30" y="32" width="2" height="2.1"/></a></svg>
+</header>
+<h2 class="day" id="d2026-10-06"><time datetime="2026-10-06">2026-10-06 Tuesday</time></h2>
+<article class="exchange claude" id="p1">
+<pre class="prompt">there are new exciting results with symmetric venn diagrams. can you get up to speed on that? i'm not finding a nice web page that just shows each one, starting with n=3 and going up to ... what's the new one? 23? if you can't find such a web page either, let's make one and host it at svenn.dreev.es in the usual way with gh pages</pre>
+<details>
+<summary><a class="anchor" href="#p1"><time datetime="2026-10-06T22:21:58.192000+00:00">15:21</time></a> <span class="chip"></span> <span class="agent">Claude Code</span> <span class="model">claude-sonnet-4-6</span> <span class="elapsed">thought for 7m37s</span></summary>
+<div class="reply machine"><p>I&#x27;ll check how your dreev.es subdomains are usually set up, then dig into the symmetric Venn news.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p2">
+<pre class="prompt">make sure to grab the AGENTS.md from github.com/beeminder/road and follow all the instructions there</pre>
+<details>
+<summary><a class="anchor" href="#p2"><time datetime="2026-10-06T22:32:25.695000+00:00">15:32</time></a> <span class="chip"></span> <span class="agent">Claude Code</span> <span class="elapsed">thought for 1m22s</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p3">
+<div class="diffstat">+980 −80 <span class="blocks" aria-hidden="true"><span class="add"></span><span class="add"></span><span class="add"></span><span class="add"></span><span class="del"></span></span></div>
+<pre class="prompt">this can be a public repo, of course. oh, it would be nice to get the transcript here in the sourcery.html file for this. can you figure that out? i normally talk to claude via the vscode extension but here i'm using the claude desktop app</pre>
+<details>
+<summary><a class="anchor" href="#p3"><time datetime="2026-10-06T22:33:46.676000+00:00">15:33</time></a> <span class="chip"></span> <span class="agent">Claude Code</span> <span class="elapsed">thought for 30m2s</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p4">
+<pre class="prompt">1. opus doing it is fine. exact commit message: "Initial commit"</pre>
+<details>
+<summary><a class="anchor" href="#p4"><time datetime="2026-10-06T23:46:14.776000+00:00">16:46</time></a> <span class="chip"></span> <span class="agent">Claude Code</span> <span class="elapsed">thought for 35s</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p5">
+<pre class="prompt">can you do the namecheap stuff for me</pre>
+<details>
+<summary><a class="anchor" href="#p5"><time datetime="2026-10-06T23:49:07.713000+00:00">16:49</time></a> <span class="chip"></span> <span class="agent">Claude Code</span> <span class="elapsed">thought for 11m59s</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p6">
+<pre class="prompt">make sure to grab the AGENTS.md from github.com/beeminder/road and follow all the instructions there</pre>
+<details>
+<summary><a class="anchor" href="#p6"><time datetime="2026-10-07T00:43:19.056000+00:00">17:43</time></a> <span class="chip"></span> <span class="agent">Claude Code</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p7">
+<pre class="prompt">1. opus doing it is fine. exact commit message: "Initial commit"</pre>
+<details>
+<summary><a class="anchor" href="#p7"><time datetime="2026-10-07T00:43:19.058000+00:00">17:43</time></a> <span class="chip"></span> <span class="agent">Claude Code</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p8">
+<pre class="prompt">this can be a public repo, of course. oh, it would be nice to get the transcript here in the sourcery.html file for this. can you figure that out? i normally talk to claude via the vscode extension but here i'm using the claude desktop app</pre>
+<details>
+<summary><a class="anchor" href="#p8"><time datetime="2026-10-07T00:43:19.058000+00:00">17:43</time></a> <span class="chip"></span> <span class="agent">Claude Code</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p9">
+<div class="diffstat">+73 −37 <span class="blocks" aria-hidden="true"><span class="add"></span><span class="add"></span><span class="add"></span><span class="del"></span><span class="nil"></span></span></div>
+<pre class="prompt">can you do the namecheap stuff for me</pre>
+<details>
+<summary><a class="anchor" href="#p9"><time datetime="2026-10-07T00:43:19.060000+00:00">17:43</time></a> <span class="chip"></span> <span class="agent">Claude Code</span> <span class="elapsed">thought for 11m48s</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p10">
+<pre class="prompt">i want to get the actual github.com/beeminder/sourcery working for this case</pre>
+<details>
+<summary><a class="anchor" href="#p10"><time datetime="2026-10-07T01:08:37.690000+00:00">18:08</time></a> <span class="chip"></span> <span class="agent">Claude Code</span> <span class="elapsed">thought for 3m32s</span></summary>
+<div class="reply machine empty"><p>No response.</p></div>
+</details>
+</article>
+<article class="exchange claude" id="p11">
+<div class="diffstat">+5 −5 <span class="blocks" aria-hidden="true"><span class="add"></span><span class="add"></span><span class="del"></span><span class="del"></span><span class="nil"></span></span></div>
+<pre class="prompt">maybe first get this checked in to github.com/dreeves/svenn and then i can take it from there in the vscode extension. include all the notes you expect to be helpful for the next instance of yourself at the bottom of AGENTS.md</pre>
+<details>
+<summary><a class="anchor" href="#p11"><time datetime="2026-10-07T01:11:52.569000+00:00">18:11</time></a> <span class="chip"></span> <span class="agent">Claude Code</span> <span class="elapsed">thought for 4m57s</span></summary>
+<div class="reply machine empty"><p>Response still generating when this transcript was captured</p></div>
+</details>
+</article>
+</main>
+<script>
+for (const control of document.querySelectorAll("[data-omnia]"))
+  control.addEventListener("click", (event) => {
+    event.preventDefault();
+    const open = control.dataset.omnia === "open";
+    for (const details of document.querySelectorAll("details")) details.open = open;
+  });
+/* The reading-progress rail: the bar's height and each day mark's top
+   share one scale — percent of full scroll travel — so the bar's tip
+   touches a day's tick at the exact moment that day's header reaches the
+   top of the viewport. A header past the last reachable scroll position
+   can never get there; its mark pins to 100%, where the bar arrives at
+   the very bottom of the page. */
+const progress = document.getElementById("progress");
+const bar = progress.querySelector(".progress-bar");
+const marks = [...progress.querySelectorAll(".daymark")].map(
+  (mark) => [mark, document.getElementById(mark.hash.slice(1))],
+);
+let ticking = false;
+const sync = () => {
+  if (ticking) return;
+  ticking = true;
+  requestAnimationFrame(() => {
+    const travel = Math.max(document.documentElement.scrollHeight - innerHeight, 1);
+    progress.classList.toggle("show", scrollY > 300);
+    bar.style.height = 100 * scrollY / travel + "%";
+    for (const [mark, header] of marks)
+      mark.style.top =
+        Math.min(100 * (header.getBoundingClientRect().top + scrollY) / travel, 100) + "%";
+    ticking = false;
+  });
+};
+addEventListener("scroll", sync, { passive: true });
+addEventListener("resize", sync);
+/* Opening or closing a disclosure reflows the whole page under the rail. */
+document.addEventListener("toggle", sync, true);
+sync();
+</script>
+<script type="application/json" id="snapshot">
+{"sourcery": "5.5.0", "repo": "svenn", "exchanges": [
+{"timestamp": "2026-10-06T22:21:58.192000+00:00", "provider": "Claude Code", "model": "claude-sonnet-4-6", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "there are new exciting results with symmetric venn diagrams. can you get up to speed on that? i'm not finding a nice web page that just shows each one, starting with n=3 and going up to ... what's the new one? 23? if you can't find such a web page either, let's make one and host it at svenn.dreev.es in the usual way with gh pages", "reply": "I'll check how your dreev.es subdomains are usually set up, then dig into the symmetric Venn news.", "effort": "", "images": [], "elapsed": 456.6179426080001, "wall": 0.0, "ballots": [], "added": 0, "deleted": 0},
+{"timestamp": "2026-10-06T22:32:25.695000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "make sure to grab the AGENTS.md from github.com/beeminder/road and follow all the instructions there", "reply": "", "effort": "", "images": [], "elapsed": 81.94500000000001, "wall": 0.0, "ballots": [], "added": 0, "deleted": 0},
+{"timestamp": "2026-10-06T22:33:46.676000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "this can be a public repo, of course. oh, it would be nice to get the transcript here in the sourcery.html file for this. can you figure that out? i normally talk to claude via the vscode extension but here i'm using the claude desktop app", "reply": "", "effort": "", "images": [], "elapsed": 1802.4709999999986, "wall": 0.0, "ballots": [], "added": 980, "deleted": 80},
+{"timestamp": "2026-10-06T23:46:14.776000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "1. opus doing it is fine. exact commit message: \"Initial commit\"", "reply": "", "effort": "", "images": [], "elapsed": 35.328, "wall": 0.0, "ballots": [], "added": 0, "deleted": 0},
+{"timestamp": "2026-10-06T23:49:07.713000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "can you do the namecheap stuff for me", "reply": "", "effort": "", "images": [], "elapsed": 718.5609999999999, "wall": 0.0, "ballots": [], "added": 0, "deleted": 0},
+{"timestamp": "2026-10-07T00:43:19.056000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "make sure to grab the AGENTS.md from github.com/beeminder/road and follow all the instructions there", "reply": "", "effort": "", "images": [], "elapsed": 0.0, "wall": 0.0, "ballots": [], "added": 0, "deleted": 0},
+{"timestamp": "2026-10-07T00:43:19.058000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "1. opus doing it is fine. exact commit message: \"Initial commit\"", "reply": "", "effort": "", "images": [], "elapsed": 0.0, "wall": 0.0, "ballots": [], "added": 0, "deleted": 0},
+{"timestamp": "2026-10-07T00:43:19.058000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "this can be a public repo, of course. oh, it would be nice to get the transcript here in the sourcery.html file for this. can you figure that out? i normally talk to claude via the vscode extension but here i'm using the claude desktop app", "reply": "", "effort": "", "images": [], "elapsed": 0.0, "wall": 0.0, "ballots": [], "added": 0, "deleted": 0},
+{"timestamp": "2026-10-07T00:43:19.060000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "can you do the namecheap stuff for me", "reply": "", "effort": "", "images": [], "elapsed": 708.2850000000002, "wall": 0.0, "ballots": [], "added": 73, "deleted": 37},
+{"timestamp": "2026-10-07T01:08:37.690000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "i want to get the actual github.com/beeminder/sourcery working for this case", "reply": "", "effort": "", "images": [], "elapsed": 212.238, "wall": 0.0, "ballots": [], "added": 0, "deleted": 0},
+{"timestamp": "2026-10-07T01:11:52.569000+00:00", "provider": "Claude Code", "model": "", "session": "59078bb9-d223-5fb2-9349-23d51d2ff44c", "prompt": "maybe first get this checked in to github.com/dreeves/svenn and then i can take it from there in the vscode extension. include all the notes you expect to be helpful for the next instance of yourself at the bottom of AGENTS.md", "reply": "", "effort": "", "images": [], "elapsed": 296.8769999999999, "wall": 0.0, "ballots": [], "added": 5, "deleted": 5}
+]}
+</script>
+</body>
+</html>
