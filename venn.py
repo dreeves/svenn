@@ -3,6 +3,8 @@
 
 Usage:  python3 venn.py certs          write certs/venn-NN.json for every drawn n
         python3 venn.py draw [N ...]   write img/venn-NN.svg and img/venn-NN.png
+        python3 venn.py icons          write img/icon.svg, favicon.ico and the home-screen icons
+        python3 venn.py preview        write img/preview.png, the link preview, from the drawings
 
 Jargon (see also quals.py):
   xseq   crossing sequence. Draw a simple monotone symmetric n-Venn diagram so
@@ -21,8 +23,11 @@ import hashlib
 import json
 import math
 import multiprocessing
+import re
+import struct
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -304,13 +309,101 @@ def draw(n):
     text = svg.read_text()
     assert text.count(head) == 1, 'unexpected SVG header'
     svg.write_text(text.replace(head, ''))
-    subprocess.run(['node', str(HERE / 'tools' / 'svg2png.mjs'), str(svg), str(svg.with_suffix('.png')),
-                    str(PNG_PX)], check=True)
+    svg2png(svg, svg.with_suffix('.png'), PNG_PX)
+
+
+def svg2png(svg, png, px):
+    """Render an SVG to a PNG px pixels wide, with resvg."""
+    subprocess.run(['node', str(HERE / 'tools' / 'svg2png.mjs'), str(svg), str(png), str(px)], check=True)
+
+
+# Icons: Venn's three circles as drawn on the page (CONICS[3], in the 3-curve drawing's colours), with strokes
+# ICON_STROKE radii wide, which is 1.4 pixels in a 16-pixel favicon. Browser tabs get them on nothing; home screens
+# get them on white with ICON_MARGIN radii to spare all round, since iOS shows transparency as black and rounds off
+# the corners.
+ICON_STROKE, ICON_MARGIN = 0.3, 0.45
+
+
+def icon_svg(margin, background):
+    """The icon as an SVG: a square viewBox fitted round the circles' strokes plus `margin` radii all round, over a
+    rectangle of colour `background` ('none' for none)."""
+    p = CONICS[3]
+    assert p['a'] == p['b'] == 1, 'the icon is drawn with unit circles'
+    th = [p['phase'] - 2 * math.pi * j / 3 for j in range(3)]
+    c = np.array([[p['d'] * math.cos(t), -p['d'] * math.sin(t)] for t in th])   # y down, as in draw_conics
+    lo, hi = c.min(0) - 1 - ICON_STROKE / 2, c.max(0) + 1 + ICON_STROKE / 2
+    side = float((hi - lo).max()) + 2 * margin
+    x, y = (lo + hi) / 2 - side / 2
+    fmt = plotter_svg.fmt
+    circles = ''.join(f'<circle cx="{fmt(cx)}" cy="{fmt(cy)}" r="1" stroke="{colour}"/>'
+                      for (cx, cy), colour in zip(c, plotter_svg.palette(3)))
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{fmt(x)} {fmt(y)} {fmt(side)} {fmt(side)}">\n'
+            f'<rect x="{fmt(x)}" y="{fmt(y)}" width="{fmt(side)}" height="{fmt(side)}" fill="{background}"/>\n'
+            f'<g fill="none" stroke-width="{ICON_STROKE}">{circles}</g>\n</svg>\n')
+
+
+def write_ico(path, pngs):
+    """Write an ICO file holding the given PNGs (as bytes; square, under 256 pixels), a form every browser reads."""
+    entries, offset = [], 6 + 16 * len(pngs)
+    for b in pngs:
+        w, h = struct.unpack('>II', b[16:24])            # from the PNG's IHDR chunk
+        assert w == h < 256, (w, h)
+        entries.append(struct.pack('<BBBBHHII', w, h, 0, 0, 1, 32, len(b), offset))
+        offset += len(b)
+    path.write_bytes(struct.pack('<HHH', 0, 1, len(pngs)) + b''.join(entries) + b''.join(pngs))
+
+
+def icons():
+    """img/icon.svg and favicon.ico for browser tabs; apple-touch-icon.png, img/icon-192.png and img/icon-512.png
+    (the last two named in manifest.webmanifest) for home screens."""
+    tab = HERE / 'img' / 'icon.svg'
+    tab.write_text(icon_svg(0, 'none'))
+    with tempfile.TemporaryDirectory() as tmp:
+        sizes = (16, 32, 48)
+        for px in sizes:
+            svg2png(tab, Path(tmp) / f'{px}.png', px)
+        write_ico(HERE / 'favicon.ico', [(Path(tmp) / f'{px}.png').read_bytes() for px in sizes])
+        home = Path(tmp) / 'home.svg'
+        home.write_text(icon_svg(ICON_MARGIN, '#ffffff'))
+        for png, px in (('apple-touch-icon.png', 180), ('img/icon-192.png', 192), ('img/icon-512.png', 512)):
+            svg2png(home, HERE / png, px)
+
+
+# The link preview: the drawings of PREVIEW_NS in two rows of three, each PREVIEW_CELL pixels square with
+# PREVIEW_GAP between, on white, in a PREVIEW_W x PREVIEW_H PNG (the size of a large link preview). Their lines are
+# PREVIEW_STROKE / n pixels wide; the drawings' own, scaled down, would be too faint to see.
+PREVIEW_NS = (3, 5, 7, 11, 13, 17)
+PREVIEW_W, PREVIEW_H, PREVIEW_CELL, PREVIEW_GAP, PREVIEW_STROKE = 1200, 630, 286, 14, 7.5
+
+
+def preview():
+    """img/preview.png, the link preview, from the drawings in img/."""
+    cols = 3
+    rows = len(PREVIEW_NS) // cols
+    assert rows * cols == len(PREVIEW_NS)
+    x0 = (PREVIEW_W - cols * PREVIEW_CELL - (cols - 1) * PREVIEW_GAP) / 2
+    y0 = (PREVIEW_H - rows * PREVIEW_CELL - (rows - 1) * PREVIEW_GAP) / 2
+    parts = []
+    for k, n in enumerate(PREVIEW_NS):
+        text = (HERE / 'img' / f'venn-{n:02d}.svg').read_text()
+        assert f'viewBox="0 0 {plotter_svg.fmt(PAGE)} {plotter_svg.fmt(PAGE)}"' in text, f'venn-{n:02d}.svg'
+        body, count = re.subn(r'stroke-width="[\d.]+"', f'stroke-width="{PREVIEW_STROKE / n * PAGE / PREVIEW_CELL:.1f}"',
+                              text[text.index('<path'):text.rindex('</svg>')])
+        assert count == n, (n, count)
+        x, y = x0 + k % cols * (PREVIEW_CELL + PREVIEW_GAP), y0 + k // cols * (PREVIEW_CELL + PREVIEW_GAP)
+        parts.append(f'<svg x="{x:g}" y="{y:g}" width="{PREVIEW_CELL}" height="{PREVIEW_CELL}" '
+                     f'viewBox="0 0 {plotter_svg.fmt(PAGE)} {plotter_svg.fmt(PAGE)}">\n{body}</svg>\n')
+    with tempfile.TemporaryDirectory() as tmp:
+        svg = Path(tmp) / 'preview.svg'
+        svg.write_text(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {PREVIEW_W} {PREVIEW_H}">\n'
+                       f'<rect width="{PREVIEW_W}" height="{PREVIEW_H}" fill="#ffffff"/>\n' + ''.join(parts) + '</svg>\n')
+        svg2png(svg, HERE / 'img' / 'preview.png', PREVIEW_W)
 
 
 def main():
     cmd, args = sys.argv[1], [int(a) for a in sys.argv[2:]]
-    {'certs': lambda: certs(), 'draw': lambda: [draw(n) for n in (args or DRAWN)]}[cmd]()
+    {'certs': lambda: certs(), 'draw': lambda: [draw(n) for n in (args or DRAWN)],
+     'icons': lambda: icons(), 'preview': lambda: preview()}[cmd]()
 
 
 if __name__ == '__main__':

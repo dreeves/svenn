@@ -21,13 +21,16 @@ Jargon, defined once here and used throughout:
          on the card for n, credited as its license requires, until this site
          has drawn its own. Listed in PLACEHOLDER below.
 """
+import html
 import html.parser
 import json
 import hashlib
 import math
 import re
+import struct
 import sys
 import urllib.request
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -248,6 +251,39 @@ def drawn_faces(polys):
     return found, len(pts)
 
 
+# ------------------------------------------------------------------ image checking
+def png_rgba(data):
+    """The pixels (h x w x 4) of an 8-bit RGBA PNG whose rows are all filtered with None or Sub, the kind
+    tools/svg2png.mjs writes (resvg filters every row with Sub). Any other PNG fails an assert."""
+    assert data[:8] == b'\x89PNG\r\n\x1a\n', 'not a PNG'
+    chunks, i = {}, 8
+    while i < len(data):
+        size, kind = struct.unpack('>I4s', data[i:i + 8])
+        chunks[kind] = chunks.get(kind, b'') + data[i + 8:i + 8 + size]
+        i += 12 + size
+    w, h, depth, color, _, _, interlace = struct.unpack('>IIBBBBB', chunks[b'IHDR'])
+    assert (depth, color, interlace) == (8, 6, 0), f'bit depth {depth}, colour type {color}, interlace {interlace}'
+    rows = np.frombuffer(zlib.decompress(chunks[b'IDAT']), np.uint8).reshape(h, 1 + 4 * w)
+    assert set(rows[:, 0].tolist()) <= {0, 1}, f'row filters {sorted(set(rows[:, 0].tolist()))}'
+    px = rows[:, 1:].reshape(h, w, 4).astype(np.int64)
+    sub = rows[:, 0] == 1
+    px[sub] = np.cumsum(px[sub], axis=1)   # Sub stores each byte minus the same channel's byte a pixel to the left
+    return (px % 256).astype(np.uint8)
+
+
+def ico_pngs(data):
+    """The images in an ICO file, as {(width, height): pixels}. Each must be a PNG that png_rgba reads."""
+    reserved, kind, count = struct.unpack('<HHH', data[:6])
+    assert (reserved, kind) == (0, 1), 'not an ICO file'
+    out = {}
+    for k in range(count):
+        w, h, _, _, _, _, size, offset = struct.unpack('<BBBBHHII', data[6 + 16 * k:22 + 16 * k])
+        px = png_rgba(data[offset:offset + size])
+        assert px.shape[:2] == (h, w), f'directory says {w}x{h}, PNG is {px.shape[1]}x{px.shape[0]}'
+        out[w, h] = px
+    return out
+
+
 # ------------------------------------------------------------------ the quals
 QUALS = []
 
@@ -364,6 +400,7 @@ class PageParser(html.parser.HTMLParser):
         super().__init__(convert_charrefs=True)
         self.cards, self.links, self.latin_bad, self.last = [], [], [], None
         self.stack = []
+        self.tags = []                                    # (tag, attributes) of every start tag, in order
         self.outside = dict(imgs=[], links=[], text='')   # collects what is in no card, and is never read
         self.card = self.outside                          # the card being parsed
 
@@ -372,6 +409,7 @@ class PageParser(html.parser.HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
+        self.tags.append((tag, a))
         if 'latin' in (a.get('class') or '').split():
             if not (self.last and self.last[0] == 'comment' and self.last[1].startswith('TODO')):
                 self.latin_bad.append(f'<{tag} class="{a.get("class")}"> lacks a TODO comment right above it')
@@ -460,6 +498,65 @@ def qual_placeholder_until_drawn():
     its placeholder file and PLACEHOLDER entry go."""
     return [f'n={n}: {svg_path(n).relative_to(HERE)} exists, so placeholder {path} should go'
             for n, (path, sha, src) in PLACEHOLDER.items() if svg_path(n).exists()]
+
+
+@qual
+def qual_icons():
+    """Replicata: open index.html and every icon it links. Expectata: favicon.ico at the site root, where browsers
+    look for it unbidden, holding 16, 32 and 48 pixel PNGs, the sizes its link gives; img/icon.svg, with a square
+    viewBox, linked as an SVG icon; apple-touch-icon.png at the root, 180 pixels square; and a web app manifest
+    whose icons are PNGs 192 and 512 pixels square, each the size it says. Those last three are home-screen icons,
+    so they are opaque: a home screen shows transparency as black."""
+    links = [a for t, a in parse_page().tags if t == 'link']
+    bad = [f'no <link> with exactly the attributes {want}' for want in (
+        dict(rel='icon', href='favicon.ico', sizes='16x16 32x32 48x48'),
+        dict(rel='icon', href='img/icon.svg', type='image/svg+xml'),
+        dict(rel='apple-touch-icon', href='apple-touch-icon.png'),
+        dict(rel='manifest', href='manifest.webmanifest')) if want not in links]
+    tab = sorted(ico_pngs((HERE / 'favicon.ico').read_bytes()))
+    if tab != [(16, 16), (32, 32), (48, 48)]:
+        bad.append(f'favicon.ico holds images of sizes {tab}')
+    box = re.search(r'viewBox="([^"]+)"', (HERE / 'img/icon.svg').read_text()).group(1).split()
+    if box[2] != box[3]:
+        bad.append(f'img/icon.svg has viewBox {box}')
+    icons = json.loads((HERE / 'manifest.webmanifest').read_text())['icons']
+    if sorted(i['sizes'] for i in icons) != ['192x192', '512x512'] or {i['type'] for i in icons} != {'image/png'}:
+        bad.append(f'the manifest\'s icons are {icons}')
+    for path, sizes in [('apple-touch-icon.png', '180x180')] + [(i['src'], i['sizes']) for i in icons]:
+        px = png_rgba((HERE / path).read_bytes())
+        got = (f'{px.shape[1]}x{px.shape[0]}', int(px[..., 3].min()))
+        if got != (sizes, 255):
+            bad.append(f'{path} is {got[0]} with least alpha {got[1]}, not {sizes} and opaque')
+    return bad
+
+
+@qual
+def qual_link_preview():
+    """Replicata: paste https://svenn.dreev.es/ into a chat app or a social site. Expectata: a large-image link
+    preview, from tags in index.html: a canonical link and og:url, both the site's root URL; og:type website;
+    og:title, the page's title; og:description, its meta description; og:image, an absolute URL on the site of an
+    opaque PNG in the repo (some previews show transparency as black) whose actual size, 1200 by 630, is what
+    og:image:width and og:image:height say; og:image:alt; and twitter:card summary_large_image."""
+    p = parse_page()
+    root = f'https://{DOMAIN}/'
+    meta = {(k, a[k]): a.get('content') for t, a in p.tags if t == 'meta' for k in ('name', 'property') if k in a}
+    og = lambda k: meta.get(('property', 'og:' + k))
+    title = html.unescape(re.search(r'<title[^>]*>(.*?)</title>', (HERE / 'index.html').read_text(), re.S).group(1))
+    assert (og('image') or '').startswith(root), f'og:image {og("image")!r} is not a URL under {root}'
+    px = png_rgba((HERE / og('image')[len(root):]).read_bytes())
+    checks = [('the canonical link', [a.get('href') for t, a in p.tags if t == 'link' and a.get('rel') == 'canonical'],
+               [root]),
+              ('og:url', og('url'), root),
+              ('og:type', og('type'), 'website'),
+              ('og:title', og('title'), title),
+              ('the meta description, present', bool(meta.get(('name', 'description'))), True),
+              ('og:description', og('description'), meta.get(('name', 'description'))),
+              ('og:image:width and og:image:height', (og('image:width'), og('image:height')), ('1200', '630')),
+              ('og:image\'s actual width and height', (px.shape[1], px.shape[0]), (1200, 630)),
+              ('og:image\'s least alpha', int(px[..., 3].min()), 255),
+              ('og:image:alt, present', bool(og('image:alt')), True),
+              ('twitter:card', meta.get(('name', 'twitter:card')), 'summary_large_image')]
+    return [f'{what} is {got!r}, not {want!r}' for what, got, want in checks if got != want]
 
 
 @qual
