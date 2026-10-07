@@ -561,10 +561,10 @@ def qual_link_preview():
 
 @qual
 def qual_page_english():
-    """Replicata: open the page in Safari, or in any browser on an iPhone (all of them WebKit). Expectata: every u
-    is drawn as a u. EB Garamond's locl feature for the Latin language draws u as v (and U as V), WebKit applies it
-    even under font-feature-settings: "locl" 0, and the page said lang="la", so on 2026-10-06 Safari showed
-    "Grünbavm" and "congrvent". The page is in English, so its one lang attribute is <html lang="en">."""
+    """Replicata: open the page in Safari, or in anything else built on WebKit. Expectata: every u is drawn as a u.
+    EB Garamond's locl feature for the Latin language draws u as v (and U as V), WebKit applies it even under
+    font-feature-settings: "locl" 0, and the page said lang="la", so on 2026-10-06 Safari showed "Grünbavm" and
+    "congrvent". The page is in English, so its one lang attribute is <html lang="en">."""
     langs = [(t, a['lang']) for t, a in parse_page().tags if 'lang' in a]
     return [] if langs == [('html', 'en')] else [f'lang attributes {langs}, not just <html lang="en">']
 

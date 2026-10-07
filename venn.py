@@ -35,10 +35,12 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-DRAWN = (3, 5, 7, 11, 13, 17, 19)
+DRAWN = (2, 3, 5, 7, 11, 13, 17, 19)
 
 # The alpha of each monotone diagram shown, copied from the papers named.
 ALPHA = {
+    # two circles: a half turn has one crossing, which is rho = 1, with alpha and delta empty (the papers start at 3)
+    2: [],
     # three circles (Venn 1880) and Grunbaum's five ellipses (1975): alpha is empty (Mamakani & Ruskey 2014, Sec. 2)
     3: [],
     5: [],
@@ -77,7 +79,6 @@ def cert_path(n): return HERE / 'certs' / f'venn-{n:02d}.json'
 def xseq(n):
     """The crossing sequence of one 1/n sector: rho, alpha, delta, alpha^r+."""
     alpha = ALPHA[n]
-    assert len(alpha) * n == 2 ** (n - 1) - (n - 1) ** 2, (n, len(alpha))
     rho = [1] + [k for i in range(3, n - 1, 2) for k in (i, i - 1)]
     delta = list(range(n - 1, 1, -1))
     alpha_r = [a + 1 for a in reversed(alpha)]
@@ -131,7 +132,7 @@ def certs():
 # than a thousandth of a 500-unit disk, so the disk is 50000 units across (page 51200 with margins).
 # The SVG's width and height attributes are then dropped so a browser fits it to the window.
 #
-# Two ways to draw, picked by DRAWER below (the one branch in this file): the n = 3 and n = 5 diagrams
+# Two ways to draw, picked by DRAWER below (the one branch in this file): the n = 2, 3 and 5 diagrams
 # are drawn as their classic congruent circles and ellipses; every other n goes through Dzoba's plotter
 # (vendor/venn17/plotter_svg.py, MIT), which lays out the cert's crossing graph and smooths it and
 # checks its own output. Both are checked against the certs by quals.py.
@@ -150,8 +151,10 @@ def stroke(n): return 18.0 / n * PAGE / PNG_PX
 # Congruent ellipses with semi-axes a and b, centred at distance d from the centre at angles
 # phase - 2 pi j / n, each tilted psi off its radial direction. The 5-ellipse values were found by a
 # grid search for a configuration with all 32 regions present and connected and the smallest region
-# as large as possible; quals.py checks the result against the cert.
+# as large as possible; quals.py checks the result against the cert. The two circles sit side by side, each through
+# the other's centre.
 CONICS = {
+    2: dict(a=1.0, b=1.0, d=0.5, psi=0.0, phase=math.pi),
     3: dict(a=1.0, b=1.0, d=0.6, psi=0.0, phase=-math.pi / 2),
     5: dict(a=1.0, b=0.5, d=0.35, psi=0.2, phase=-math.pi / 2),
 }
