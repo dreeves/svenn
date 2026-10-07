@@ -17,6 +17,9 @@ Jargon, defined once here and used throughout:
   cert   short for certificate: {"n": n, "faces": [...]}, the dual map of a
          simple symmetric n-Venn diagram, in the format of Chris Dzoba's
          github.com/dzoba/venn17 repo.
+  placeholder  someone else's published drawing of an n-Venn diagram, shown
+         on the card for n, credited as its license requires, until this site
+         has drawn its own. Listed in PLACEHOLDER below.
 """
 import html.parser
 import json
@@ -44,6 +47,15 @@ PUBLISHED_SHA256 = {
     17: 'c178d7bdde6e02b1b0c2780339434095d3633b8bb77a7293e9d575d04ad7ae77',  # venn17-local-c3-s2.json
     19: 'ed26b3baa6e5c02bc3a4239b1dfbf84d66f731cad2dd2805a8c1770e2c1fdb5d',  # venn19-closure-s196002.json
 }
+# Placeholders: n -> (file, its SHA-256, the page it was copied from). Each file is byte-identical to one at
+# github.com/dzoba/venn17 commit e89d6f6, under CC BY 4.0 like the rest of that repo's images and paper.
+PLACEHOLDER = {
+    # Figure 1 of Dzoba's paper: venn19-closure-s196002, the cert shown here (fcb7ad34 in the paper's Table 1,
+    # which gives the SHA-256 of the search state it was exported from)
+    19: ('img/venn19-s196002.jpg', '1b852d90815f1dbe2c02395d7af44194e7185486d22e52a4a217f2a71230dfcf',
+         'https://github.com/dzoba/venn17/blob/e89d6f6f8cf17294c5b32e0406088684557fbde4/paper/figures/venn19-s196002.jpg'),
+}
+CC_BY = 'https://creativecommons.org/licenses/by/4.0/'
 DOMAIN = 'svenn.dreev.es'
 
 
@@ -352,6 +364,8 @@ class PageParser(html.parser.HTMLParser):
         super().__init__(convert_charrefs=True)
         self.cards, self.links, self.latin_bad, self.last = [], [], [], None
         self.stack = []
+        self.outside = dict(imgs=[], links=[], text='')   # collects what is in no card, and is never read
+        self.card = self.outside                          # the card being parsed
 
     def handle_comment(self, data):
         self.last = ('comment', data.strip())
@@ -362,20 +376,25 @@ class PageParser(html.parser.HTMLParser):
             if not (self.last and self.last[0] == 'comment' and self.last[1].startswith('TODO')):
                 self.latin_bad.append(f'<{tag} class="{a.get("class")}"> lacks a TODO comment right above it')
         if 'card' in (a.get('class') or '').split():
-            self.cards.append(dict(n=a.get('data-n'), regions=a.get('data-regions'),
-                                   crossings=a.get('data-crossings'), imgs=[], text=''))
-        if tag == 'img' and self.cards:
-            self.cards[-1]['imgs'].append(a.get('src'))
+            self.card = dict(n=a.get('data-n'), regions=a.get('data-regions'),
+                             crossings=a.get('data-crossings'), imgs=[], links=[], text='')
+            self.cards.append(self.card)
+        if tag == 'img':
+            self.card['imgs'].append(a.get('src'))
         for k in ('href', 'src'):
             if a.get(k):
                 self.links.append(a[k])
+                self.card['links'].append(a[k])
         self.last = ('tag', tag)
+
+    def handle_endtag(self, tag):
+        if tag == 'section':
+            self.card = self.outside
 
     def handle_data(self, data):
         if data.strip():
             self.last = ('data', data)
-        if self.cards:
-            self.cards[-1]['text'] += data
+        self.card['text'] += data
 
 
 def parse_page():
@@ -403,6 +422,44 @@ def qual_page_cards():
         if len(c['imgs']) != 1 or not (HERE / c['imgs'][0]).is_file():
             bad.append(f'n={n}: image {c["imgs"]} missing')
     return bad
+
+
+@qual
+def qual_local_links():
+    """Replicata: open index.html and follow every link that is neither an absolute URL nor an in-page #anchor.
+    Expectata: each names a file in the repo."""
+    return [f'{u} missing' for u in sorted(set(parse_page().links))
+            if not u.startswith(('http', '#')) and not (HERE / u).is_file()]
+
+
+@qual
+def qual_placeholder_provenance():
+    """Replicata: shasum -a 256 on each placeholder file. Expectata: byte-identical to the file it was copied
+    from (the raw form of its source URL: blob/ changed to raw/)."""
+    return [f'n={n}: {path} sha256 {h[:12]}... is not {want[:12]}...'
+            for n, (path, want, src) in PLACEHOLDER.items()
+            for h in [hashlib.sha256((HERE / path).read_bytes()).hexdigest()] if h != want]
+
+
+@qual
+def qual_placeholder_credited():
+    """Replicata: open index.html. Expectata: the card for each n with a placeholder shows it, and links to the
+    page it was copied from and to the CC BY 4.0 license, as that license's attribution terms require."""
+    cards = {int(c['n']): c for c in parse_page().cards}
+    return [f'n={n}: the card does not {what}'
+            for n, (path, sha, src) in PLACEHOLDER.items()
+            for what, ok in ((f'show {path} as its one image', cards[n]['imgs'] == [path]),
+                             (f'link to {src}', src in cards[n]['links']),
+                             (f'link to {CC_BY}', CC_BY in cards[n]['links'])) if not ok]
+
+
+@qual
+def qual_placeholder_until_drawn():
+    """Replicata: python3 venn.py draw N, for an n with a placeholder. Expectata: no n has both a placeholder and
+    a drawing of this site's own (img/venn-NN.svg); once it is drawn, its card shows img/venn-NN.png again and
+    its placeholder file and PLACEHOLDER entry go."""
+    return [f'n={n}: {svg_path(n).relative_to(HERE)} exists, so placeholder {path} should go'
+            for n, (path, sha, src) in PLACEHOLDER.items() if svg_path(n).exists()]
 
 
 @qual

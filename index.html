@@ -40,6 +40,7 @@
   }
   figcaption { color: var(--muted); }
   figcaption p { margin: 0; }
+  figcaption p + p { margin-top: 0.8rem; }
   h2 {
     font-weight: 400;
     font-size: clamp(4rem, 11vw, 7rem);
@@ -148,8 +149,10 @@
     <h2>19</h2>
     <!-- TODO: One of twelve 19-curve diagrams found in September 2026 the same way; this one (venn19-closure-s196002) is also verified in Lean 4. 524,288 regions, 524,286 crossings. -->
     <p class="latin">Unum e duodecim diagrammatibus undeviginti curvarum eodem modo mense Septembri 2026 inventis; hoc quoque (venn19-closure-s196002) in Lean 4 probatum est. 524&#8239;288 regiones, 524&#8239;286 intersectiones.</p>
+    <!-- TODO: picture credit: "Picture: Chris Dzoba's drawing of this diagram (CC BY 4.0), shown here until this site's own drawing is ready." The first link goes to the file it was copied from, the second to the license. -->
+    <p class="latin">Pictura: <a href="https://github.com/dzoba/venn17/blob/e89d6f6f8cf17294c5b32e0406088684557fbde4/paper/figures/venn19-s196002.jpg">delineatio huius diagrammatis a Chris Dzoba facta</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>), quae hic ostenditur donec nostra delineatio parata sit.</p>
   </figcaption>
-  <a class="pic" href="img/venn-19.svg"><!-- TODO: alt text: "Simple symmetric Venn diagram with 19 curves" --><img class="latin" src="img/venn-19.png" width="1600" height="1600" loading="lazy" alt="Diagramma Vennianum simplex symmetricum undeviginti curvarum"></a>
+  <a class="pic" href="img/venn19-s196002.jpg"><!-- TODO: alt text: "Simple symmetric Venn diagram with 19 curves" --><img class="latin" src="img/venn19-s196002.jpg" width="2400" height="2400" loading="lazy" alt="Diagramma Vennianum simplex symmetricum undeviginti curvarum"></a>
 </figure>
 </section>
 
@@ -180,8 +183,8 @@
     <li>C. Dzoba, <a href="https://arxiv.org/abs/2609.26546">“Simple symmetric Venn diagrams with 17 and 19 curves”</a>, arXiv:2609.26546 (2026); <a href="https://github.com/dzoba/venn17">github.com/dzoba/venn17</a>.</li>
     <li>F. Ruskey, M. Weston, <a href="https://www.combinatorics.org/files/Surveys/ds5/VennEJC.html">“A Survey of Venn Diagrams”</a>, <i>Electronic Journal of Combinatorics</i>, Dynamic Survey DS5.</li>
   </ol>
-  <!-- TODO: The circles and ellipses (n = 3, 5) are drawn geometrically. The other diagrams are drawn from their certificates with Chris Dzoba's plotter (MIT license). The 17- and 19-curve certificates come from github.com/dzoba/venn17 (CC BY 4.0); the others are computed from crossing sequences that Mamakani and Ruskey published. Every drawing is checked against its certificate. -->
-  <p class="latin">Circuli et ellipses (<i>n</i> = 3, 5) geometrice delineati sunt. Cetera diagrammata ex certificatis suis instrumento Chris Dzoba (licentia MIT) delineata sunt. Certificata septendecim et undeviginti curvarum ex github.com/dzoba/venn17 sumpta sunt (CC BY 4.0), cetera ex seriebus intersectionum a Mamakani et Ruskey editis computata. Quodque diagramma cum certificato suo comparatum est.</p>
+  <!-- TODO: The circles and ellipses (n = 3, 5) are drawn geometrically. The other diagrams are drawn from their certificates with Chris Dzoba's plotter (MIT license). The 17- and 19-curve certificates come from github.com/dzoba/venn17 (CC BY 4.0); the others are computed from crossing sequences that Mamakani and Ruskey published. Every drawing made here is checked against its certificate. -->
+  <p class="latin">Circuli et ellipses (<i>n</i> = 3, 5) geometrice delineati sunt. Cetera diagrammata ex certificatis suis instrumento Chris Dzoba (licentia MIT) delineata sunt. Certificata septendecim et undeviginti curvarum ex github.com/dzoba/venn17 sumpta sunt (CC BY 4.0), cetera ex seriebus intersectionum a Mamakani et Ruskey editis computata. Quodque diagramma hic delineatum cum certificato suo comparatum est.</p>
   <!-- TODO: link texts: "Source code of this page" and "the conversation it was built in" -->
   <p class="latin"><a href="https://github.com/dreeves/svenn">Fons huius paginae</a>; <a href="sourcery.html">colloquium unde orta est</a>.</p>
 </footer>
