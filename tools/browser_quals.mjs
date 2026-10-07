@@ -11,13 +11,13 @@ import { fileURLToPath } from 'node:url'
 import { chromium, firefox, webkit } from 'playwright'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const NS = process.argv.slice(2).map(Number)
+const VIEWED = process.argv.slice(2).map(Number)
 const SMALL = 7                       // the n most checks use: quick to load, with curves enough to tell apart
 const W = 1200, H = 800               // the window
 const STEP = Math.min(W, H) / 10      // what an arrow key pans by
 const TYPES = { '.html': 'text/html', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
                 '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' }
-assert(NS.includes(SMALL), `n = ${SMALL} is not among the n given: ${NS}`)
+assert(VIEWED.includes(SMALL), `n = ${SMALL} is not among the n given: ${VIEWED}`)
 const nn = n => String(n).padStart(2, '0')   // as in the drawings' file names
 
 // A static file server for the repo, answering 404 for what is not there, as GitHub Pages does
@@ -46,8 +46,18 @@ const under = (m, [x, y]) => [(x - m.e) / m.a, (y - m.f) / m.d]   // the page po
 const at = (m, [x, y]) => [m.a * x + m.e, m.d * y + m.f]          // the screen point where page point (x, y) is drawn
 const far = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1])
 const fmt = p => `(${p.map(v => v.toFixed(2)).join(', ')})`
+const strokes = page => page.evaluate(() => [...document.querySelectorAll('#stage path')].map(p => {
+  const s = getComputedStyle(p)
+  return [s.vectorEffect, parseFloat(s.strokeWidth)]
+}))
+// Dispatch synthetic pointer events at the stage, as a mouse, pen or finger would send them
+const pointers = (page, events) => page.evaluate(events => {
+  const stage = document.getElementById('stage')
+  for (const [type, init] of events) stage.dispatchEvent(new PointerEvent(type, { bubbles: true, ...init }))
+}, events)
 const ready = (page, n) => page.waitForFunction(
-  n => document.querySelectorAll('#curves button:enabled').length === n && document.querySelectorAll('#stage path').length === n, n)
+  n => document.querySelectorAll('#curves button:enabled').length === n && document.querySelectorAll('#stage path').length === n, n,
+  { timeout: 60000 })   // 19's SVG is 62 MB: Firefox can take over 10 s to load it when the machine is busy
 
 async function open(page, n) {
   await page.goto(`${BASE}/view.html?n=${n}`)
@@ -62,20 +72,18 @@ function holds(problem, m, s, p, want, what) {
 
 const CHECKS = {
   async fit(page, problem) {
-    for (const n of NS) {
-      await open(page, n)
-      const { page: side, stroke } = await drawing(n)
-      const m = await ctm(page)
-      const k = Math.min(W, H) / side
-      holds(problem, m, [W / 2, H / 2], [side / 2, side / 2], k, `n=${n}, the page's centre`)
-      const css = await page.evaluate(() => [...document.querySelectorAll('#stage path')].map(p => {
-        const s = getComputedStyle(p)
-        return [s.vectorEffect, parseFloat(s.strokeWidth)]
-      }))
-      css.forEach(([effect, width], i) => {
-        if (effect !== 'non-scaling-stroke') problem(`n=${n}: curve ${i} has vector-effect ${effect}`)
-        if (Math.abs(width / (stroke * k) - 1) > 1e-3) problem(`n=${n}: curve ${i} is ${width}px wide, not ${stroke * k}px`)
-      })
+    for (const n of VIEWED) {
+      await (async () => {
+        await open(page, n)
+        const { page: side, stroke } = await drawing(n)
+        const m = await ctm(page)
+        const k = Math.min(W, H) / side
+        holds(problem, m, [W / 2, H / 2], [side / 2, side / 2], k, `n=${n}, the page's centre`)
+        ;(await strokes(page)).forEach(([effect, width], i) => {
+          if (effect !== 'non-scaling-stroke') problem(`n=${n}: curve ${i} has vector-effect ${effect}`)
+          if (Math.abs(width / (stroke * k) - 1) > 1e-3) problem(`n=${n}: curve ${i} is ${width}px wide, not ${stroke * k}px`)
+        })
+      })().catch(e => problem(`n=${n}: ${e.name}: ${e.message.split('\n')[0]}`))
     }
   },
 
@@ -85,12 +93,18 @@ const CHECKS = {
       shown: [...document.querySelectorAll('#stage path')].map(p => getComputedStyle(p).display !== 'none'),
       pressed: [...document.querySelectorAll('#curves button')].map(b => b.getAttribute('aria-pressed') === 'true'),
       colours: [...document.querySelectorAll('#curves button')].map(b => getComputedStyle(b).backgroundColor),
+      opacity: [...document.querySelectorAll('#curves button')].map(b => getComputedStyle(b).opacity),
       strokes: [...document.querySelectorAll('#stage path')].map(p => getComputedStyle(p).stroke) }))
     const swatch = k => page.locator('#curves button').nth(k)
     const expect = (s, k, what) => {   // curves 0 to k shown, and exactly their swatches pressed
       const want = s.shown.map((_, i) => i <= k)
       if (String(s.shown) !== String(want)) problem(`${what}: curves shown ${s.shown}, not ${want}`)
       if (String(s.pressed) !== String(want)) problem(`${what}: swatches pressed ${s.pressed}, not ${want}`)
+      // a shown curve's swatch is its colour; a hidden one's is faded, by its fill and not its opacity, which would
+      // fade its focus ring too
+      const fill = s.colours.map((c, i) => (c === s.strokes[i]) === (i <= k))
+      if (fill.includes(false)) problem(`${what}: swatch fills ${s.colours} against curves ${s.strokes}`)
+      if (s.opacity.some(o => o !== '1')) problem(`${what}: swatch opacities ${s.opacity}`)
     }
     const s0 = await state()
     if (s0.colours.length !== SMALL) problem(`${s0.colours.length} swatches for ${SMALL} curves`)
@@ -117,12 +131,23 @@ const CHECKS = {
     await page.mouse.wheel(0, -400)
     await frames(page)
     holds(problem, await ctm(page), s, p, m0.a * Math.E, 'wheel 400px up')
+    const fitWidths = await strokes(page)
     const m1 = await ctm(page)
     await page.keyboard.down('Control')
     await page.mouse.wheel(0, 100)
     await page.keyboard.up('Control')
     await frames(page)
     holds(problem, await ctm(page), s, p, m1.a / Math.E, 'ctrl+wheel 100px down')
+    // Wheels that count in lines (16 pixels each here) or pages (the window's height), as some mice report
+    for (const [deltaMode, deltaY, what] of [[1, -25, 'wheel 25 lines up'], [2, -0.5, 'wheel half a page up']]) {
+      const m = await ctm(page)
+      await page.evaluate(([deltaMode, deltaY, [x, y]]) => document.getElementById('stage').dispatchEvent(
+        new WheelEvent('wheel', { deltaMode, deltaY, clientX: x, clientY: y, bubbles: true, cancelable: true })), [deltaMode, deltaY, s])
+      holds(problem, await ctm(page), s, p, m.a * Math.E, what)
+    }
+    await page.mouse.wheel(0, -4000)
+    const deep = await strokes(page)
+    if (String(deep) !== String(fitWidths)) problem(`zoomed in, the lines are ${deep}, not ${fitWidths} as before`)
   },
 
   async drag(page, problem) {
@@ -134,6 +159,11 @@ const CHECKS = {
     await page.mouse.move(...s1, { steps: 6 })
     await page.mouse.up()
     holds(problem, await ctm(page), s1, p, m0.a, 'drag')
+    const hit = await page.evaluate(() => {
+      const path = document.getElementById('curve-0'), m = path.getScreenCTM(), q = path.getPointAtLength(0)
+      return document.elementFromPoint(m.a * q.x + m.e, m.d * q.y + m.f).id
+    })
+    if (hit !== 'stage') problem(`the pointer over curve 0 hits #${hit}, not #stage`)
   },
 
   async pinch(page, problem) {
@@ -142,13 +172,66 @@ const CHECKS = {
     const m0 = await ctm(page), p = under(m0, a)
     // Two touch pointers, as a phone reports two fingers: one stays at a, the other moves from b to b2, doubling
     // their distance apart. (Synthetic events: Playwright drives one touch at a time.)
-    await page.evaluate(([a, b, b2]) => {
-      const stage = document.getElementById('stage')
-      const ev = (type, id, [x, y]) => stage.dispatchEvent(new PointerEvent(type,
-        { pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: x, clientY: y, bubbles: true }))
-      ev('pointerdown', 1, a); ev('pointerdown', 2, b); ev('pointermove', 2, b2); ev('pointerup', 2, b2); ev('pointerup', 1, a)
-    }, [a, b, b2])
+    const touch = (id, [x, y], buttons) => ({ pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: x, clientY: y, buttons })
+    await pointers(page, [['pointerdown', touch(1, a, 1)], ['pointerdown', touch(2, b, 1)], ['pointermove', touch(2, b2, 1)],
+                          ['pointerup', touch(2, b2, 0)], ['pointerup', touch(1, a, 0)]])
     holds(problem, await ctm(page), a, p, m0.a * 2, 'pinch')
+    const action = await page.evaluate(() => getComputedStyle(document.documentElement).touchAction)
+    if (action !== 'none') problem(`the page has touch-action ${action}, so a pinch over a control zooms the whole page`)
+  },
+
+  async mouse(page, problem) {
+    await open(page, SMALL)
+    const s0 = [W * 0.4, H * 0.45], s1 = [s0[0] + 120, s0[1] + 80]
+    const m0 = await ctm(page), p = under(m0, s0)
+    const mouse = (button, [x, y], buttons) => ({ pointerId: 1, pointerType: 'mouse', isPrimary: true, button, buttons, clientX: x, clientY: y })
+    // A right-button drag (which opens a context menu) and a middle-button drag
+    for (const [button, buttons, what] of [[2, 2, 'right-button drag'], [1, 4, 'middle-button drag']]) {
+      await pointers(page, [['pointerdown', mouse(button, s0, buttons)], ['pointermove', mouse(-1, s1, buttons)],
+                            ['pointerup', mouse(button, s1, 0)]])
+      holds(problem, await ctm(page), s0, p, m0.a, what)
+    }
+    // A left press whose release never arrives (after a context menu, say), then the mouse moving with no button down
+    await pointers(page, [['pointerdown', mouse(0, s0, 1)], ['pointermove', mouse(-1, s1, 0)]])
+    holds(problem, await ctm(page), s0, p, m0.a, 'mouse moved with no button down after a lost release')
+  },
+
+  async controls(page, problem) {
+    await open(page, SMALL)
+    // The wheel, and a trackpad pinch (the wheel with ctrl held), over the controls zoom the drawing too
+    for (const [sel, ctrl, delta, f] of [['#in', false, -400, Math.E], ['#curves button', true, 100, 1 / Math.E], ['#n', false, -400, Math.E]]) {
+      const box = await page.locator(sel).first().boundingBox()
+      const s = [box.x + box.width / 2, box.y + box.height / 2]
+      const m = await ctm(page), p = under(m, s)
+      await page.mouse.move(...s)
+      if (ctrl) await page.keyboard.down('Control')
+      await page.mouse.wheel(0, delta)
+      if (ctrl) await page.keyboard.up('Control')
+      await frames(page)
+      holds(problem, await ctm(page), s, p, m.a * f, `${ctrl ? 'ctrl+' : ''}wheel over ${sel}`)
+    }
+  },
+
+  async gesture(page, problem) {
+    await open(page, SMALL)
+    // Safari reports a trackpad pinch as gesturestart and gesturechange events carrying the scale so far
+    const gesture = (events) => page.evaluate(events => {
+      for (const [type, scale, x, y] of events) {
+        const e = new Event(type, { bubbles: true, cancelable: true })
+        Object.assign(e, { scale, clientX: x, clientY: y })
+        document.getElementById('stage').dispatchEvent(e)
+      }
+    }, events)
+    const s = [W * 0.35, H * 0.6]
+    const m0 = await ctm(page), p = under(m0, s)
+    await gesture([['gesturestart', 1, ...s], ['gesturechange', 1.5, ...s], ['gesturechange', 2, ...s], ['gestureend', 2, ...s]])
+    holds(problem, await ctm(page), s, p, m0.a * 2, 'trackpad pinch to scale 2')
+    // A touchscreen pinch in Safari sends gesture events as well as the pointers, which already zoom: no second zoom
+    const m1 = await ctm(page)
+    await pointers(page, [['pointerdown', { pointerId: 5, pointerType: 'touch', clientX: s[0], clientY: s[1], buttons: 1 }]])
+    await gesture([['gesturestart', 1, ...s], ['gesturechange', 2, ...s]])
+    await pointers(page, [['pointerup', { pointerId: 5, pointerType: 'touch', clientX: s[0], clientY: s[1], buttons: 0 }]])
+    holds(problem, await ctm(page), s, p, m1.a, 'gesture events during a touch')
   },
 
   async dblclick(page, problem) {
@@ -190,9 +273,16 @@ const CHECKS = {
     holds(problem, await ctm(page), c, p, m0.a / 2, '+ key then - key twice')
     await page.keyboard.press('0')
     holds(problem, await ctm(page), c, p, m0.a, '0 key')
-    const q = under(await ctm(page), [c[0] + STEP, c[1]])
-    await page.keyboard.press('ArrowRight')
-    holds(problem, await ctm(page), c, q, m0.a, 'right arrow key')
+    await page.keyboard.press('=')
+    holds(problem, await ctm(page), c, p, m0.a * 2, '= key (+ without shift)')
+    await page.keyboard.press('Alt+0')
+    holds(problem, await ctm(page), c, p, m0.a * 2, 'alt+0')
+    await page.keyboard.press('0')
+    for (const [key, dx, dy] of [['ArrowRight', STEP, 0], ['ArrowLeft', -STEP, 0], ['ArrowDown', 0, STEP], ['ArrowUp', 0, -STEP]]) {
+      const q = under(await ctm(page), [c[0] + dx, c[1] + dy])
+      await page.keyboard.press(key)
+      holds(problem, await ctm(page), c, q, m0.a, `${key} key`)
+    }
   },
 
   async limits(page, problem) {
@@ -241,6 +331,17 @@ const CHECKS = {
     const s0 = await state()
     const want0 = { image: [`img/venn-${nn(SMALL)}.png`], paths: 0, enabled: 0, swatches: SMALL }
     if (JSON.stringify(s0) !== JSON.stringify(want0)) problem(`while the SVG loads: ${JSON.stringify(s0)}, not ${JSON.stringify(want0)}`)
+    const box = () => page.evaluate(() => {
+      const r = document.querySelector('#stage image').getBoundingClientRect()
+      return [r.left, r.top, r.width, r.height]
+    })
+    const side = Math.min(W, H)
+    for (const [want, what] of [[[(W - side) / 2, (H - side) / 2, side, side], 'fitting the window'],
+                                [[W / 2 - side, H / 2 - side, 2 * side, 2 * side], 'after the + button']]) {
+      if (what !== 'fitting the window') await page.click('#in')
+      const got = await box()
+      if (got.some((v, i) => Math.abs(v - want[i]) > 0.5)) problem(`the stand-in PNG ${what}: ${got}, not ${want}`)
+    }
     release()
     await ready(page, SMALL)
     const s1 = await state()
@@ -255,12 +356,21 @@ const CHECKS = {
     const got = await page.evaluate(() => ({ text: document.getElementById('error').textContent,
                                              swatches: document.querySelectorAll('#curves button').length,
                                              enabled: document.querySelectorAll('#curves button:enabled').length }))
-    if (!got.text.includes('img/venn-04.svg') || !got.text.includes('404')) problem(`the error says "${got.text}"`)
+    if (!got.text.includes('img/venn-04.svg') || !got.text.endsWith('(404)')) problem(`the error says "${got.text}"`)
     if (got.swatches !== 4 || got.enabled !== 0) problem(`${got.swatches} swatches, ${got.enabled} of them enabled`)
+    const pictures = await page.evaluate(() => document.querySelectorAll('#stage image').length)
+    if (pictures) problem(`${pictures} broken pictures left in the drawing area`)
+    for (const bad of ['abc', '', '10000000']) {
+      await page.goto(`${BASE}/view.html?n=${bad}`)
+      await page.waitForSelector('#error', { state: 'visible', timeout: 3000 })
+        .catch(() => problem(`n=${bad}: no error shown within 3 seconds`))
+      const swatches = await page.evaluate(() => document.querySelectorAll('#curves button').length)
+      if (swatches) problem(`n=${bad}: ${swatches} swatches`)
+    }
   },
 
   async phone(page, problem) {
-    const n = Math.max(...NS)
+    const n = Math.max(...VIEWED)
     await page.setViewportSize({ width: 375, height: 667 })
     await open(page, n)
     const boxes = await page.evaluate(() => ['#top', '#raw', '#curves', '#zoom'].map(sel => {

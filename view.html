@@ -12,11 +12,10 @@
   :root {                                   /* index.html's colours */
     --paper: #ffffff;
     --ink: #1d2433;
-    --muted: #5c6577;
     --line: #e2e5ea;
   }
   * { box-sizing: border-box; }
-  html { background: var(--paper); color: var(--ink); }
+  html { background: var(--paper); color: var(--ink); touch-action: none; }   /* the viewer handles every drag and pinch itself, even over the controls */
   body {
     margin: 0;
     font: 400 1.15rem/1.6 "EB Garamond", Garamond, Georgia, serif;
@@ -27,17 +26,16 @@
   #stage {
     position: fixed;
     inset: 0;
-    touch-action: none;                     /* the viewer handles every drag and pinch itself */
     user-select: none;
     -webkit-user-select: none;
     cursor: grab;
   }
   #stage.held { cursor: grabbing; }
-  #stage svg { display: block; width: 100%; height: 100%; }
+  #stage svg { display: block; width: 100%; height: 100%; pointer-events: none; }   /* hit-testing 19's curves takes seconds */
   #stage path { vector-effect: non-scaling-stroke; stroke-width: var(--stroke); }
   #top { position: fixed; top: 1rem; left: 1rem; display: flex; align-items: center; gap: 0.7rem; }
-  h1 { margin: 0; font-weight: 500; font-size: 2rem; line-height: 1; }
-  #raw { position: fixed; top: 1.4rem; right: 1rem; line-height: 1; }
+  h1 { margin: 0; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); font-weight: 500; font-size: 2rem; line-height: 1; }
+  #raw { position: fixed; top: 1.4rem; right: 1rem; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); line-height: 1; }
   #bar {
     position: fixed;
     left: 1rem;
@@ -61,7 +59,8 @@
     box-shadow: 0 0 0 1px var(--line);
     cursor: pointer;
   }
-  #curves button[aria-pressed="false"] { opacity: 0.25; }   /* its curve is hidden */
+  /* its curve is hidden: fade the fill, not the opacity, which would fade the focus ring too */
+  #curves button[aria-pressed="false"] { background: color-mix(in srgb, var(--colour, var(--line)) 25%, var(--paper)); }
   #curves button:disabled { cursor: default; }
   #zoom { display: flex; gap: 0.4rem; flex: none; }
   .icon {
@@ -119,7 +118,8 @@ const SVGNS = 'http://www.w3.org/2000/svg'
 const PAGE = 51200                     // the side of every drawing's square page, in SVG units (venn.py's PAGE)
 const ZOOM = [1 / 2, 1000]             // how far out and in it zooms, relative to the page just fitting the window
 const LINE = 16                        // pixels per line, for wheels that count in lines
-const n = Number(new URLSearchParams(location.search).get('n'))
+const param = new URLSearchParams(location.search).get('n')
+const n = /^[1-9]\d?$/.test(param) ? Number(param) : NaN   // NaN loads nothing, and the error says venn-NaN
 const nn = String(n).padStart(2, '0')
 const file = `img/venn-${nn}.svg`
 const stage = document.getElementById('stage')
@@ -133,6 +133,7 @@ document.getElementById('back').href = `index.html#n${n}`
 document.getElementById('raw').href = file
 const thumb = document.createElementNS(SVGNS, 'image')
 for (const [k, v] of Object.entries({ href: `img/venn-${nn}.png`, width: PAGE, height: PAGE })) thumb.setAttribute(k, v)
+thumb.addEventListener('error', () => thumb.remove())   // no PNG either: leave the error alone on the page
 svg.append(thumb)
 stage.append(svg)
 
@@ -190,11 +191,17 @@ function spread() {                    // the held pointers' centroid, and their
   const x = ps.reduce((a, p) => a + p[0], 0) / k, y = ps.reduce((a, p) => a + p[1], 0) / k
   return [x, y, ps.reduce((a, p) => a + Math.hypot(p[0] - x, p[1] - y), 0) / k]
 }
+function release(id) {
+  held.delete(id)
+  stage.classList.toggle('held', held.size > 0)
+}
 stage.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return           // only the main button drags (a finger and a pen's tip count as it)
   held.set(e.pointerId, [e.clientX, e.clientY])
   stage.classList.add('held')
 })
 addEventListener('pointermove', e => {
+  if (!e.buttons) release(e.pointerId) // nothing pressed, so its release went missing (after a context menu, say)
   if (!held.has(e.pointerId)) return   // a pointer passing over, not pressed on the drawing
   const [x0, y0, d0] = spread()
   held.set(e.pointerId, [e.clientX, e.clientY])
@@ -202,24 +209,22 @@ addEventListener('pointermove', e => {
   pan(x1 - x0, y1 - y0)
   if (d0 > 0) zoom(x1, y1, d1 / d0)    // a pinch, i.e. more than one pointer held
 })
-for (const type of ['pointerup', 'pointercancel']) addEventListener(type, e => {
-  held.delete(e.pointerId)
-  stage.classList.toggle('held', held.size > 0)
-})
+for (const type of ['pointerup', 'pointercancel']) addEventListener(type, e => release(e.pointerId))
 
 // The wheel zooms by a factor of e per 400 pixels. A trackpad pinch arrives as the wheel with ctrl held, by 100
-// pixels per factor of e (in Chromium and Firefox; Safari sends gesture events instead).
-stage.addEventListener('wheel', e => {
+// pixels per factor of e (in Chromium and Firefox; Safari sends gesture events instead). Both listen on the whole
+// window, so that a wheel or pinch over the controls zooms the drawing rather than the page.
+addEventListener('wheel', e => {
   e.preventDefault()
   zoom(e.clientX, e.clientY, Math.exp(-e.deltaY * [1, LINE, stage.clientHeight][e.deltaMode] / (e.ctrlKey ? 100 : 400)))
 }, { passive: false })
 // Safari's gesture events: a trackpad pinch, followed here, or a touchscreen pinch, which the pointers above follow
 let gesture = 1
-stage.addEventListener('gesturestart', e => {
+addEventListener('gesturestart', e => {
   e.preventDefault()
   gesture = 1
 })
-stage.addEventListener('gesturechange', e => {
+addEventListener('gesturechange', e => {
   e.preventDefault()
   if (held.size === 0) zoom(e.clientX, e.clientY, e.scale / gesture)
   gesture = e.scale
@@ -242,13 +247,13 @@ addEventListener('keydown', e => {
 addEventListener('resize', draw)
 
 fetch(file)
-  .then(r => r.ok ? r.text() : Promise.reject(new Error(`${r.status} ${r.statusText}`)))
+  .then(r => r.ok ? r.text() : Promise.reject(new Error(r.status)))   // just the status: HTTP/2 has no status text
   .then(text => {
     const src = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement
     const paths = [...src.querySelectorAll('path')]
     const got = [src.getAttribute('viewBox'), paths.length, ...paths.map(p => p.id)]
     const want = [`0 0 ${PAGE} ${PAGE}`, n, ...paths.map((_, i) => `curve-${i}`)]
-    if (String(got) !== String(want)) throw new Error(`viewBox, curve count and ids ${got}, not ${want}`)
+    if (String(got) !== String(want)) throw new Error(`${got} ≠ ${want}`)   // viewBox, curve count, ids
     stroke = Number(paths[0].getAttribute('stroke-width'))
     svg.replaceChildren(...paths.map(p => document.importNode(p, true)))
     const colours = paths.map(p => p.getAttribute('stroke'))

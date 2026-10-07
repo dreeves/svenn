@@ -54,12 +54,7 @@ PUBLISHED_SHA256 = {
 }
 # Placeholders: n -> (file, its SHA-256, the page it was copied from). Each file is byte-identical to one at
 # github.com/dzoba/venn17 commit e89d6f6, under CC BY 4.0 like the rest of that repo's images and paper.
-PLACEHOLDER = {
-    # Figure 1 of Dzoba's paper: venn19-closure-s196002, the cert shown here (fcb7ad34 in the paper's Table 1,
-    # which gives the SHA-256 of the search state it was exported from)
-    19: ('img/venn19-s196002.jpg', '1b852d90815f1dbe2c02395d7af44194e7185486d22e52a4a217f2a71230dfcf',
-         'https://github.com/dzoba/venn17/blob/e89d6f6f8cf17294c5b32e0406088684557fbde4/paper/figures/venn19-s196002.jpg'),
-}
+PLACEHOLDER = {}
 CC_BY = 'https://creativecommons.org/licenses/by/4.0/'
 VIEWED = tuple(n for n in DRAWN if n not in PLACEHOLDER)   # n whose card opens view.html on this site's own drawing
 PAGES = ('index.html', 'view.html')                        # the site's pages: the list, and the viewer
@@ -587,19 +582,18 @@ def browser(check):
     """The problems tools/browser_quals.mjs found with view.html, the viewer, in one of its checks, in Chromium, WebKit
     or Firefox. All the checks run together, on first use. They need `cd tools && npm ci`, and Playwright's builds of
     the three browsers (`cd tools && npx playwright install` if they are not already installed)."""
-    if not _browser:
-        run = subprocess.run(['node', str(HERE / 'tools' / 'browser_quals.mjs'), *map(str, VIEWED)],
-                             capture_output=True, text=True)
-        assert run.returncode == 0, run.stderr[-3000:]
-        _browser.update(json.loads(run.stdout))
-    return _browser[check]
+    if 'run' not in _browser:   # kept even when it failed, so that a failing run isn't repeated by every qual
+        _browser['run'] = subprocess.run(['node', str(HERE / 'tools' / 'browser_quals.mjs'), *map(str, VIEWED)],
+                                         capture_output=True, text=True)
+    run = _browser['run']
+    assert run.returncode == 0, run.stderr[-3000:]
+    return json.loads(run.stdout)[check]
 
 
 @qual
 def qual_viewer_linked():
     """Replicata: on index.html, click the picture on each card whose drawing is this site's own. Expectata: it opens
-    view.html?n=N, the viewer, where the drawing can be panned and zoomed and its curves seen one at a time; the
-    viewer links to the bare SVG."""
+    view.html?n=N, the viewer."""
     cards = {int(c['n']): c for c in parse_page().cards}
     return [f'n={n}: the card links to {cards[n]["links"]}' for n in VIEWED if f'view.html?n={n}' not in cards[n]['links']]
 
@@ -607,9 +601,9 @@ def qual_viewer_linked():
 @qual
 def qual_viewer_fit():
     """Replicata: open view.html?n=N for every n it shows, in Chromium, WebKit and Firefox, in a 1200 by 800 window.
-    Expectata: the drawing's square page fits the window's shorter side, centred; each curve's line is as wide on
-    screen as the SVG's own stroke-width makes it at that size, and doesn't scale (vector-effect: non-scaling-stroke),
-    so lines keep that width when zoomed in and bundles of nearly parallel curves come apart."""
+    Expectata: for each n, the drawing's square page fits the window's shorter side, centred; each curve's line is as
+    wide on screen as the SVG's own stroke-width makes it at that size, and doesn't scale (vector-effect:
+    non-scaling-stroke), so lines keep that width when zoomed in and bundles of nearly parallel curves come apart."""
     return browser('fit')
 
 
@@ -620,22 +614,26 @@ def qual_viewer_curves():
     shows the curves up to and including its own, so that clicking them left to right adds the curves one at a time:
     the first shows curve 0 alone (counting from 0, as the SVG's ids curve-0 to curve-6 do), the third curves 0 to 2,
     clicking it again changes nothing, and the seventh, like Escape, shows all seven, as on opening. Exactly the
-    swatches of the curves shown are pressed (aria-pressed)."""
+    swatches of the curves shown are pressed (aria-pressed) and in their curves' colours; the others are faded by their
+    fill, not their opacity, which would fade their focus rings too."""
     return browser('curves')
 
 
 @qual
 def qual_viewer_wheel():
     """Replicata: in view.html?n=7, point at a spot and turn the wheel 400 pixels up; then hold ctrl and turn it 100
-    pixels down, which is how browsers report a trackpad pinch. Expectata: the drawing zooms in by a factor of e and
-    then out by e, both about the spot pointed at, which stays put."""
+    pixels down, which is how browsers report a trackpad pinch; then turn a wheel that counts in lines 25 lines up,
+    and one that counts in pages half a page up; then zoom in far. Expectata: the drawing zooms in by a factor of e,
+    then out by e, then in by e twice (a line counting as 16 pixels, a page as the window's height), each time about
+    the spot pointed at, which stays put; and the lines stay as wide on screen as before zooming."""
     return browser('wheel')
 
 
 @qual
 def qual_viewer_drag():
-    """Replicata: in view.html?n=7, drag the drawing 120 pixels right and 80 down. Expectata: the point grabbed moves
-    with the pointer, ending under it; the scale doesn't change."""
+    """Replicata: in view.html?n=7, drag the drawing 120 pixels right and 80 down; point at a curve. Expectata: the
+    point grabbed moves with the pointer, ending under it; the scale doesn't change. The curves never take the
+    pointer: it reaches the stage beneath them, since hit-testing 17's or 19's strokes on every move takes seconds."""
     return browser('drag')
 
 
@@ -643,8 +641,33 @@ def qual_viewer_drag():
 def qual_viewer_pinch():
     """Replicata: in view.html?n=7, put two fingers down 120 pixels apart and move one of them away from the other
     until they are 240 apart. Expectata: the drawing zooms in by 2, the point under the finger that stayed put staying
-    under it."""
+    under it. The page has touch-action: none, so that a pinch that starts over the controls doesn't zoom the page."""
     return browser('pinch')
+
+
+@qual
+def qual_viewer_mouse():
+    """Replicata: in view.html?n=7, drag with the right button, then with the middle one; then press the left button
+    and move the mouse with no button down, as when the release never arrives (after a context menu, say).
+    Expectata: the drawing doesn't move."""
+    return browser('mouse')
+
+
+@qual
+def qual_viewer_controls():
+    """Replicata: in view.html?n=7, turn the wheel 400 pixels up over the + button; hold ctrl and turn it 100 pixels
+    down over the first swatch; turn it 400 pixels up over the number. Expectata: each zooms the drawing as it would
+    over the drawing itself (by e, by 1/e, by e), about the spot pointed at, not the page."""
+    return browser('controls')
+
+
+@qual
+def qual_viewer_gesture():
+    """Replicata: in Safari (WebKit), pinch on a trackpad over view.html?n=7 to twice the size, which Safari reports
+    as gesturestart and gesturechange events carrying the scale so far; then pinch on a touchscreen, which Safari
+    reports as touch pointers and gesture events both. Expectata: the trackpad pinch zooms in by 2 about the spot
+    pinched; the touchscreen's gesture events add nothing to what its pointers do."""
+    return browser('gesture')
 
 
 @qual
@@ -662,18 +685,19 @@ def qual_viewer_buttons():
 
 @qual
 def qual_viewer_keys():
-    """Replicata: in view.html?n=7, press +, then ctrl+0 and cmd+0, then - twice, then 0, then the right arrow.
-    Expectata: + and - zoom in and out by 2 about the window's centre; 0 fits the drawing as on opening; ctrl+0 and
-    cmd+0, the browser's own zoom keys, do nothing to the drawing; the right arrow pans a tenth of the window's
-    shorter side to the right, so the point that was that far right of centre is now at the centre."""
+    """Replicata: in view.html?n=7, press +, then ctrl+0 and cmd+0, then - twice, then 0, then =, then alt+0, then
+    0 and the four arrows. Expectata: + (or =, the same key without shift) and - zoom in and out by 2 about the
+    window's centre; 0 fits the drawing as on opening; ctrl+0, cmd+0 and alt+0, the browser's own keys, do nothing to
+    the drawing; each arrow pans a tenth of the window's shorter side its way, so the point that was that far from
+    the centre in its direction is now at the centre."""
     return browser('keys')
 
 
 @qual
 def qual_viewer_limits():
-    """Replicata: in view.html?n=7, click − six times; then turn the wheel far up. Expectata: zooming out stops at
-    half the size that fits the window, and zooming in stops at 1000 times it (where a pixel is about a twentieth of
-    a unit of the SVG's 51200-unit page, still coarser than the three decimals the SVG gives coordinates to)."""
+    """Replicata: in view.html?n=7, in a 1200 by 800 window, click − six times; then turn the wheel far up.
+    Expectata: zooming out stops at half the size that fits the window, and zooming in stops at 1000 times it (where a
+    pixel is 0.064 units of the SVG's 51200-unit page, still coarser than the 0.001 the SVG gives coordinates to)."""
     return browser('limits')
 
 
@@ -694,16 +718,20 @@ def qual_viewer_links():
 
 @qual
 def qual_viewer_loading():
-    """Replicata: open view.html?n=7 while img/venn-07.svg is slow to arrive. Expectata: meanwhile the viewer shows
-    img/venn-07.png, the card's picture, which pans and zooms like the drawing, and seven swatches, all disabled;
-    once the SVG arrives, its seven curves replace the picture and the swatches work."""
+    """Replicata: open view.html?n=7 while img/venn-07.svg is slow to arrive, and click +. Expectata: meanwhile the
+    viewer shows img/venn-07.png, the card's picture, placed as the drawing would be (fitting the window's shorter
+    side, centred) and zoomed by + as it would be, and seven swatches, all disabled; once the SVG arrives, its seven
+    curves replace the picture and the swatches work."""
     return browser('loading')
 
 
 @qual
 def qual_viewer_error():
-    """Replicata: open view.html?n=4, for which there is no drawing. Expectata: a visible error saying that
-    img/venn-04.svg could not be loaded, with the server's answer (404), and four swatches, all disabled."""
+    """Replicata: open view.html?n=4, for which there is no drawing; then view.html?n=abc, view.html?n= and
+    view.html?n=10000000. Expectata: for n=4, a visible error saying that img/venn-04.svg could not be loaded, ending
+    with the server's status in brackets, "(404)" (status text alone would be empty over HTTP/2, as GitHub Pages
+    serves it), four swatches, all disabled, and no broken picture in the drawing area; for the others, an error
+    within 3 seconds and no swatches."""
     return browser('error')
 
 
