@@ -1,4 +1,4 @@
-"""Geometry shared by venn.py (smoothing check, compaction) and quals.py (drawing check)."""
+"""Geometry shared by venn.py (smoothing check) and quals.py (drawing check)."""
 import math
 import re
 
@@ -57,25 +57,6 @@ def sample(nets, step):
     P = nets[span]
     return ((1 - t) ** 3 * P[:, 0] + 3 * (1 - t) ** 2 * t * P[:, 1]
             + 3 * (1 - t) * t ** 2 * P[:, 2] + t ** 3 * P[:, 3]), span
-
-
-def intersections(polys):
-    """All proper intersections between segments of the closed polylines: arrays (curve_a, seg_a,
-    t_a, curve_b, seg_b, t_b, point) with one row per intersection, plus an (m x 2) array of the
-    segment pairs that touch degenerately (collinear, or at an endpoint), as (curve, seg) rows."""
-    A = np.concatenate(polys)
-    B = np.concatenate([np.roll(p, -1, 0) for p in polys])
-    cid = np.concatenate([np.full(len(p), i, np.int16) for i, p in enumerate(polys)])
-    sid = np.concatenate([np.arange(len(p), dtype=np.int32) for p in polys])
-    nseg = np.array([len(p) for p in polys], np.int32)[cid]
-    L = np.linalg.norm(B - A, axis=1)
-    block = 2_000_000                       # candidate pairs tested at a time, to bound memory
-    hits = [segment_hits(A, B, cid, sid, nseg, i[k:k + block], j[k:k + block])
-            for i, j in candidate_pairs(0.5 * (A + B), float(L.max()) * 1.0001)
-            for k in range(0, len(i), block)]
-    i, j, t, u, ti, tj = (np.concatenate(h) for h in zip(*hits))
-    touches = np.stack([cid[ti], sid[ti], cid[tj], sid[tj]], 1)
-    return cid[i], sid[i], t, cid[j], sid[j], u, A[i] + t[:, None] * (B[i] - A[i]), touches
 
 
 def segment_hits(A, B, cid, sid, nseg, i, j):

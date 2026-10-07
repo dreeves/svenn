@@ -26,10 +26,12 @@ import html.parser
 import json
 import hashlib
 import math
+import os
 import re
 import struct
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -41,23 +43,26 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 
-from geom import candidate_pairs, intersections, nets, rotate, sample
+import cert
+from geom import candidate_pairs, nets, rotate, sample, segment_hits
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE / 'vendor' / 'venn17'))
+import plotter_svg  # noqa: E402   (vendored; see venn.py)
 NS = (2, 3, 5, 7, 11, 13, 17, 19, 23)  # every prime up to the largest n with a known diagram
-DRAWN = (2, 3, 5, 7, 11, 13, 17, 19)   # n for which a cert is available and a drawing is shown
-PENDING = (23,)                        # n announced but with no downloadable cert yet
-assert DRAWN + PENDING == NS
-# SHA-256 of the two certs taken from github.com/dzoba/venn17: the ones formally verified in Lean 4
+DRAWN = NS                             # n for which a cert is available and a drawing is shown
+# SHA-256 of the three certs taken from github.com/dzoba/venn17: the ones formally verified in Lean 4
 PUBLISHED_SHA256 = {
     17: 'c178d7bdde6e02b1b0c2780339434095d3633b8bb77a7293e9d575d04ad7ae77',  # venn17-local-c3-s2.json
     19: 'ed26b3baa6e5c02bc3a4239b1dfbf84d66f731cad2dd2805a8c1770e2c1fdb5d',  # venn19-closure-s196002.json
+    23: 'adc5a02eeaac6e49ac56ed9acfe6aebf5325ca13ebe070486c792b0d80eae2b1',  # venn23-c25-s230025.json
 }
 # Placeholders: n -> (file, its SHA-256, the page it was copied from). Each file is byte-identical to one at
 # github.com/dzoba/venn17 commit e89d6f6, under CC BY 4.0 like the rest of that repo's images and paper.
 PLACEHOLDER = {}
 CC_BY = 'https://creativecommons.org/licenses/by/4.0/'
-VIEWED = tuple(n for n in DRAWN if n not in PLACEHOLDER)   # n whose card opens view.html on this site's own drawing
+PNG_ONLY = (23,)   # n whose card links to its PNG: view.html can't show 8,388,606 crossings
+VIEWED = tuple(n for n in DRAWN if n not in PLACEHOLDER and n not in PNG_ONLY)   # n whose card opens view.html on this site's own drawing
 PAGES = ('index.html', 'view.html')                        # the site's pages: the list, and the viewer
 DOMAIN = 'svenn.dreev.es'
 
@@ -67,22 +72,10 @@ def svg_path(n): return HERE / 'img' / f'venn-{n:02d}.svg'
 
 
 # ------------------------------------------------------------------ cert checking
-def read_cert(n):
-    d = json.loads(cert_path(n).read_text())
-    assert d['n'] == n, (d['n'], n)
-    weights = 1 << np.arange(n, dtype=np.int64)
-    flat = [s for f in d['faces'] for s in f]
-    assert all(len(s) == n and set(s) <= {'0', '1'} for s in flat), 'labels are not n-bit strings'
-    bits = np.frombuffer(''.join(flat).encode(), np.uint8).reshape(-1, n) - ord('0')
-    return (bits.astype(np.int64) @ weights).reshape(-1, 4)
+def read_cert(n): return cert.read(cert_path(n), n)
 
 
 def is_pow2(x): return (x > 0) & ((x & (x - 1)) == 0)
-
-
-def rot(x, n):
-    """The label rotation x[j] <- x[j+1] (Dzoba's convention; its inverse works equally well)."""
-    return (x >> 1) | ((x & 1) << (n - 1))
 
 
 def check_cert(n, F):
@@ -102,11 +95,12 @@ def check_cert(n, F):
     uk, cnt = np.unique(key, return_counts=True)
     r['every edge borders exactly two faces'] = bool(np.all(cnt == 2))
     r['Euler characteristic 2'] = N - len(uk) + m == 2
+    del U, V, key, cnt   # 0.9 GB at n = 23
     r['faces orient consistently'], O = orient(F, N)
-    r['every region is a disk'] = single_rotation_cycles(O, N) if O is not None else False
+    r['every region is a disk'] = single_rotation_cycles(O, N)
+    del O
     ek = uk  # undirected edges as U*N+V
     eu, ev = ek // N, ek % N
-    bit = eu ^ ev
     ok = True
     for i in range(n):
         for side in (0, 1):
@@ -118,7 +112,7 @@ def check_cert(n, F):
             ok &= connected_components(g, directed=False)[0] == 1
     r['both sides of every curve connected'] = bool(ok)
     canon = np.sort(F, 1)
-    rotated = np.sort(rot(F, n), 1)
+    rotated = np.sort(cert.rot(F, n), 1)   # the label rotation x[j] <- x[j+1] (its inverse works equally well)
     s1 = canon[np.lexsort(canon.T[::-1])]
     s2 = rotated[np.lexsort(rotated.T[::-1])]
     r['symmetric under label rotation'] = bool(np.array_equal(s1, s2))
@@ -126,8 +120,8 @@ def check_cert(n, F):
 
 
 def orient(F, N):
-    """Orient every face so each edge is traversed once each way (BFS over shared edges). Returns
-    (True, oriented faces) or (False, None) when no consistent orientation exists."""
+    """Orient every face so each edge is traversed once each way (BFS over shared edges). Returns whether that
+    worked, and the faces with each flipped or not as the BFS chose."""
     m = len(F)
     start = F.ravel()                                # slot s = 4*face + j is the edge F[face, j] -> F[face, j+1]
     end = np.roll(F, -1, 1).ravel()
@@ -141,19 +135,18 @@ def orient(F, N):
     # Two faces sharing an edge are consistently oriented iff they traverse it in opposite directions,
     # so their flips must differ exactly when, as listed, they traverse it the same way.
     need = (start[partner] == start).astype(np.int8)
+    del end, key, order, k2
     flip = np.full(m, -1, np.int8)
     flip[0] = 0
-    frontier = [0]
-    nbr, nd = (partner // 4).tolist(), need.tolist()
-    while frontier:
-        nxt = []
-        for f in frontier:
-            for s in range(4 * f, 4 * f + 4):
-                g = nbr[s]
-                if flip[g] < 0:
-                    flip[g] = flip[f] ^ nd[s]
-                    nxt.append(g)
-        frontier = nxt
+    frontier = np.zeros(1, np.int64)
+    while len(frontier):
+        # The frontier's slots, face by face; a face not yet flipped takes its flip from the first slot that reaches
+        # it and joins the next frontier in that order (so this is the face-at-a-time BFS, a level at a time).
+        s = (4 * frontier[:, None] + np.arange(4)).ravel()
+        s = s[flip[partner[s] // 4] < 0]
+        g, first = np.unique(partner[s] // 4, return_index=True)
+        flip[g] = flip[s[first] // 4] ^ need[s[first]]
+        frontier = g[np.argsort(first)]
     reached = bool(np.all(flip >= 0))
     consistent = reached and bool(np.all((flip[np.arange(4 * m) // 4] ^ flip[partner // 4]) == need))
     O = np.where(flip[:, None] == 1, F[:, ::-1], F)
@@ -161,36 +154,48 @@ def orient(F, N):
 
 
 def single_rotation_cycles(O, N):
-    """Around each label, chaining its faces through shared edges must give one cycle."""
-    nxt = {}
-    for row in O.tolist():
-        for k in range(4):
-            v, p, q = row[k], row[k - 1], row[(k + 1) % 4]
-            nxt.setdefault(v, {})[p] = q
-    for v, m in nxt.items():
-        start = next(iter(m))
-        x, steps = m[start], 1
-        while x != start:
-            x, steps = m[x], steps + 1
-            if steps > len(m):
-                return False
-        if steps != len(m):
-            return False
-    return len(nxt) == N
+    """Around each label, chaining its faces through shared edges must give one cycle. This is the walk a dict of
+    dicts would do, nxt[v][p] = q for each corner of each face in turn (label v, p before it and q after it), then
+    for each v from the first p it got, failing if it reaches a p with no entry: done for every label at once, with
+    sorted arrays for the dicts."""
+    v = O.ravel()                            # corner c = 4*face + k: label v[c] between p[c] and q[c]
+    p = np.roll(O, 1, 1).ravel()
+    key = v * N + p
+    order = np.argsort(key, kind='stable')
+    ks = key[order]
+    last = np.r_[ks[1:] != ks[:-1], True]    # the last corner with each (v, p), whose q the dict keeps
+    node, to = ks[last], np.roll(O, -1, 1).ravel()[order[last]]   # the dicts' keys (v, p), as v*N + p, and values q
+    del key, order, ks, last
+    labels, first = np.unique(v, return_index=True)
+    size = np.unique(node // N, return_counts=True)[1]          # len(nxt[v])
+    home = np.searchsorted(node, labels * N + p[first])          # the key v's walk starts from
+    del p
+    goal = node // N * N + to
+    nxt = np.minimum(np.searchsorted(node, goal), len(node) - 1)
+    nxt[node[nxt] != goal] = -1                                  # the key each step lands on, or -1: a KeyError
+    del goal
+    ok = np.zeros(len(labels), bool)
+    walk, at, steps = np.arange(len(labels)), nxt[home], 1   # the labels still walking, and where
+    while len(walk):
+        back = at == home[walk]
+        ok[walk[back]] = steps == size[walk[back]]
+        go = ~back & (at >= 0) & (steps < size[walk])
+        walk, at, steps = walk[go], nxt[at[go]], steps + 1
+    return bool(ok.all()) and len(labels) == N
 
 
 # ------------------------------------------------------------------ drawing checking
 def read_svg(path):
-    """Return (curves, page, degrees) where curves[i] is the (k x 4 x 2) array of cubic Bezier control nets that the SVG
-    draws as <use id="curve-i">: its one path, <path id="curve">, rotated by degrees[i] about the page centre."""
+    """Return (curve, page, degrees): the (k x 4 x 2) array of cubic Bezier control nets of the SVG's one path, <path
+    id="curve">, and for each curve i, drawn as <use id="curve-i">, the degrees it turns that path by about the page
+    centre. Curve i is rotate(curve, page, degrees[i])."""
     t = path.read_text()
     page = float(re.search(r'viewBox="0 0 ([\d.]+) [\d.]+"', t).group(1))
     base = nets(re.search(r'<path id="curve" d="([^"]+)"/>', t).group(1))
     uses = re.findall(r'<use id="curve-(\d+)" href="#curve" [^>]*transform="rotate\(([-\d.e]+) ([\d.]+) ([\d.]+)\)"/>', t)
     assert [int(i) for i, _, _, _ in uses] == list(range(len(uses))), 'curve ids out of order'
     assert {(float(x), float(y)) for _, _, x, y in uses} == {(page / 2, page / 2)}, 'rotations not about the page centre'
-    degrees = [float(a) for _, a, _, _ in uses]
-    return [rotate(base, page, a) for a in degrees], page, degrees
+    return base, page, [float(a) for _, a, _, _ in uses]
 
 
 def inside(points, polys):
@@ -211,42 +216,110 @@ def point_segment_distance(x, A, B):
     return np.linalg.norm(x - (A + t[:, None] * ab), axis=1)
 
 
-def drawn_faces(polys):
-    """Walk each curve through its crossings in order, toggling the labels of the regions on its two
-    sides, and return {crossing point id: face} for every crossing, from each of its two curves."""
-    n = len(polys)
-    ca, sa, ta, cb, sb, tb, pts, touches = intersections(polys)
-    assert len(touches) == 0, f'{len(touches)} degenerate segment contacts'
-    assert not np.any(ca == cb), f'{int(np.sum(ca == cb))} self-intersections'
-    SA = np.concatenate(polys)
-    SB = np.concatenate([np.roll(p, -1, 0) for p in polys])
-    scid = np.concatenate([np.full(len(p), i) for i, p in enumerate(polys)])
-    ssid = np.concatenate([np.arange(len(p)) for p in polys])
-    found = []
-    for c in range(n):
-        mine = np.concatenate([np.flatnonzero(ca == c), np.flatnonzero(cb == c)])
-        pos = np.concatenate([sa[ca == c] + ta[ca == c], sb[cb == c] + tb[cb == c]])
-        partner = np.concatenate([cb[ca == c], ca[cb == c]])
-        order = np.roll(np.argsort(pos), -1)   # the walk starts just after crossing 0 and ends with it
-        mine, pos, partner = mine[order], pos[order], partner[order]
-        # start between crossings 0 and 1, offset to both sides by a third of the clearance
-        mid = 0.5 * (pos[-1] + pos[0])
-        k, f = int(mid), mid - int(mid)
-        P = polys[c]
-        a, b = P[k], P[(k + 1) % len(P)]
-        x = a + f * (b - a)
-        nrm = np.array([-(b - a)[1], (b - a)[0]]) / np.linalg.norm(b - a)
-        # clearance: distance to every segment except this one and its two neighbours
-        d = point_segment_distance(x, SA, SB)
-        near = (scid == c) & (np.abs((ssid - k + 1) % len(P)) <= 2)
-        eps = float(d[~near].min()) / 3
-        lab = inside(np.array([x + eps * nrm, x - eps * nrm]), polys) @ (1 << np.arange(n))
-        L, R = int(lab[0]), int(lab[1])
-        assert L ^ R == 1 << c, 'the two start points do not straddle exactly this curve'
-        for pid, b in zip(mine.tolist(), partner.tolist()):
-            found.append((pid, frozenset((L, R, L ^ (1 << b), R ^ (1 << b)))))
-            L, R = L ^ (1 << b), R ^ (1 << b)
-    return found, len(pts)
+def drawn_faces(path, n):
+    """Sample the curves of the drawing at path, find every crossing, and label the regions around each by walking
+    each curve through its crossings, toggling the labels of the regions on its two sides; all from one sector (a
+    1/n slice of the disk about the page centre).
+
+    Curve i is the SVG's one path turned by k_i sectors, each k from 0 to n - 1 once (asserted, to within 1e-9 of a
+    sector). So the drawing is the path's polyline P and n - 1 turned copies of it, and its crossings come in orbits
+    (a crossing and its n - 1 turns by multiples of a sector). Each orbit has a crossing in the sector from angle 0
+    to 360/n degrees, and both segments that crossing lies on reach into the sector; so intersecting the segments of
+    every copy of P that reach into it finds every orbit. It finds some twice, near the sector's edges, so an orbit is
+    named by the two segments of P its crossings lie on and the number of sectors between their copies of P. Each
+    orbit has two crossings on P itself: one with the copy d sectors on, and that one turned back d sectors, which is
+    on the copy d sectors back. Walking P through all of them is walking every curve, turned; turning a crossing
+    turns its labels too, each curve's bit moving to the curve as many sectors on. Returns what walking every curve
+    gives: the number of crossings (n per orbit); their faces (each orbit's turned n ways); and how many crossings the
+    two curves through them label differently. Segment contacts and self-intersections fail asserts, counted over the
+    whole drawing."""
+    base, page, degrees = read_svg(path)
+    assert len(degrees) == n, (len(degrees), n)
+    turns = np.array(degrees) * n / 360
+    k = np.round(turns).astype(np.int64) % n
+    assert np.allclose(turns, np.round(turns), rtol=0, atol=1e-9) and sorted(k.tolist()) == list(range(n)), degrees
+    curve = np.argsort(k)                        # curve[j] is the path turned by j sectors
+    deg = np.array(degrees)[curve]               # by deg[j] degrees, as the file says
+    P = sample(base, float(np.median(np.linalg.norm(base[:, 3] - base[:, 0], axis=1))) / 6)[0]
+    A, B, M = P, np.roll(P, -1, 0), len(P)       # segment s of P runs from P[s] to P[s + 1]
+    assert n * M * M < 2 ** 63, 'orbit names overflow'
+    # each segment spans the angles lo to lo + width about the page centre (rotate() adds to angles)
+    a0 = np.arctan2(A[:, 1] - page / 2, A[:, 0] - page / 2)
+    sweep = np.remainder(np.arctan2(B[:, 1] - page / 2, B[:, 0] - page / 2) - a0 + math.pi, 2 * math.pi) - math.pi
+    lo, width, th = a0 + np.minimum(sweep, 0), np.abs(sweep), 2 * math.pi / n
+    assert width.max() < math.pi / 2, 'a segment passes too near the page centre'
+    reach = []                                   # the segments of each copy of P that reach into the sector
+    for j in range(n):
+        ang = np.remainder(lo + j * th, 2 * math.pi)
+        sel = np.flatnonzero((ang <= th + 1e-6) | (ang + width >= 2 * math.pi - 1e-6))   # a margin costs only time
+        reach.append((sel, np.full(len(sel), j), rotate(A[sel], page, deg[j]), rotate(B[sel], page, deg[j])))
+    seg, turn, SA, SB = (np.concatenate(x) for x in zip(*reach))
+    del reach, a0, sweep, lo, width
+    hits = [segment_hits(SA, SB, turn, seg, np.full(len(seg), M), i[q:q + 2_000_000], j[q:q + 2_000_000])
+            for i, j in candidate_pairs(0.5 * (SA + SB), float(np.linalg.norm(B - A, axis=1).max()) * 1.0001)
+            for q in range(0, len(i), 2_000_000)]
+    i, j, t, u, ti, tj = (np.concatenate(h) for h in zip(*hits))
+    del hits, SA, SB
+
+    def orbit(i, j):
+        """The name of the orbit of the crossing of found segments i and j, d * M^2 + s1 * M + s2 for segments s1 and
+        s2 of P and copies of P d sectors apart, from whichever end makes it smaller; and whether that is i's end."""
+        d = (turn[j] - turn[i]) % n
+        fwd, bwd = (d * M + seg[i]) * M + seg[j], ((n - d) % n * M + seg[j]) * M + seg[i]
+        return np.minimum(fwd, bwd), fwd <= bwd
+
+    touches = n * len(np.unique(orbit(ti, tj)[0]))
+    assert touches == 0, f'{touches} degenerate segment contacts'
+    name, ahead = orbit(i, j)
+    o = np.unique(name, return_index=True)[1]    # one crossing of each orbit
+    i, j, t, u, ahead = i[o], j[o], t[o], u[o], ahead[o]
+    d = np.where(ahead, turn[j] - turn[i], turn[i] - turn[j]) % n
+    s1, t1 = np.where(ahead, seg[i], seg[j]), np.where(ahead, t, u)
+    s2, t2 = np.where(ahead, seg[j], seg[i]), np.where(ahead, u, t)
+    assert not np.any(d == 0), f'{n * int(np.sum(d == 0))} self-intersections'
+    # P's crossings: each orbit's at s1 + t1, with the curve d sectors on; then each orbit's at s2 + t2, with the curve
+    # d sectors back
+    K = len(d)
+    pos = np.concatenate([s1 + t1, s2 + t2])
+    other = curve[np.concatenate([d, (n - d) % n])]
+    order = np.roll(np.argsort(pos), -1)         # the walk starts just after crossing 0 and ends with it
+    # start between crossings 0 and 1, offset to both sides by a third of the clearance
+    mid = 0.5 * (pos[order[-1]] + pos[order[0]])
+    s, f = int(mid), mid - int(mid)
+    a, b = P[s], P[(s + 1) % M]
+    x = a + f * (b - a)
+    nrm = np.array([-(b - a)[1], (b - a)[0]]) / np.linalg.norm(b - a)
+    # clearance: distance to every segment except this one and its two neighbours. A point's distance from curve[j],
+    # and whether it is inside curve[j], are those of the point turned back j sectors from P.
+    near = np.abs((np.arange(M) - s + 1) % M) <= 2
+    eps = min(float(point_segment_distance(rotate(x, page, -deg[j]), A, B)[(j > 0) | ~near].min())
+              for j in range(n)) / 3
+    y = np.array([x + eps * nrm, x - eps * nrm])
+    lab = inside(np.concatenate([rotate(y, page, -deg[j]) for j in range(n)]), [P]).reshape(n, 2).T @ (1 << curve)
+    L, R = int(lab[0]), int(lab[1])
+    assert L ^ R == 1 << int(curve[0]), 'the two start points do not straddle exactly this curve'
+    bit = 1 << other[order]
+    before = np.bitwise_xor.accumulate(bit) ^ bit   # the bits toggled before each crossing of the walk
+    face = np.empty((2 * K, 4), np.int64)
+    face[order] = np.stack([L ^ before, R ^ before, L ^ before ^ bit, R ^ before ^ bit], 1)
+    # every label turned by a sector: curve c's bit moves to the curve a sector on
+    turned = sum(((np.arange(1 << n) >> c) & 1) << int(curve[(k[c] + 1) % n]) for c in range(n))
+    seen = face[K:].copy()                       # each orbit's crossing on P as its other curve labels it
+    for step in range(1, n):
+        seen[d >= step] = turned[seen[d >= step]]
+    mismatched = n * int(np.sum(np.any(np.sort(face[:K], 1) != np.sort(seen, 1), 1)))
+    faces = [face[:K]]
+    for _ in range(n - 1):
+        faces.append(turned[faces[-1]])
+    return n * K, np.concatenate(faces), mismatched
+
+
+def distinct(F):
+    """The rows of F as a set of sets: one row for each different set of labels, its labels in order after a -1 for
+    each repeat in it (so rows with repeats, as no face has, compare as Python's frozensets do)."""
+    s = np.sort(F, 1)
+    s[:, 1:][s[:, 1:] == s[:, :-1]] = -1
+    return np.unique(np.sort(s, 1), axis=0)
 
 
 # ------------------------------------------------------------------ image checking
@@ -304,11 +377,100 @@ def qual_cert_valid():
 
 @qual
 def qual_cert_provenance():
-    """Replicata: sha256sum certs/venn-17.json certs/venn-19.json.
+    """Replicata: sha256sum certs/venn-17.json certs/venn-19.json certs/venn-23.json.
     Expectata: the published SHA-256 of the Lean-verified certs from github.com/dzoba/venn17."""
     return [f'n={n}: sha256 {h[:12]}... is not {want[:12]}...'
             for n, want in PUBLISHED_SHA256.items()
-            for h in [hashlib.sha256(cert_path(n).read_bytes()).hexdigest()] if h != want]
+            for h in [hashlib.file_digest(open(cert_path(n), 'rb'), 'sha256').hexdigest()] if h != want]
+
+
+@qual
+def qual_cert_read():
+    """Replicata: cert.read(certs/venn-NN.json, n), with which venn.py reads every cert, for each drawn n whose cert
+    json.loads can read (all but 23's, 889 MB); then on copies of the 7's with a space after a comma, a label of 8
+    characters, a 2 in a label, an apostrophe for a quote mark, a semicolon between faces, a face missing, a face too
+    many, and "n":8. Expectata: the faces json.loads gives, in the same order; and on each bad copy, an exception, not
+    faces."""
+    bad = []
+    for n in (2, 3, 5, 7, 11, 13, 17, 19):
+        want = np.array([[int(s[::-1], 2) for s in f] for f in json.loads(cert_path(n).read_text())['faces']])
+        if not np.array_equal(cert.read(cert_path(n), n), want):
+            bad.append(f'n={n}: not the faces json.loads gives')
+    t = cert_path(7).read_text()
+    first = t.index('["')
+    face = t[first:t.index(']', first) + 1]
+    for what, copy in (('a space after a comma', t.replace('","', '", "', 1)),
+                       ('a label of 8 characters', t.replace('"0000000"', '"00000000"', 1)),
+                       ('a 2 in a label', t.replace('1', '2', 1)),
+                       ('an apostrophe for a quote mark', t.replace('"1000000"', "'1000000'", 1)),
+                       ('a semicolon between faces', t.replace('],[', '];[', 1)),
+                       ('a face missing', t.replace(face + ',', '', 1)),
+                       ('a face too many', t.replace(face, face + ',' + face, 1)),
+                       ('"n":8', t.replace('"n":7', '"n":8', 1))):
+        assert copy != t, what
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'c.json').write_text(copy)
+            try:
+                cert.read(Path(tmp) / 'c.json', 7)
+                bad.append(f'with {what}, read without an exception')
+            except Exception:
+                pass
+    return bad
+
+
+def orbits(part, items):
+    """The partition of items by their parts' ids."""
+    by = {}
+    for x, p in zip(items, part):
+        by.setdefault(p, set()).add(x)
+    return {frozenset(s) for s in by.values()}
+
+
+@qual
+def qual_crossing_graph():
+    """Replicata: cert.Primal, which venn.py lays out in place of the vendored plotter_svg.Primal (2 GB at n = 19, so
+    it could not take 23), for n = 7, 11 and 13, and for the 7's cert with its faces listed in reverse order (so that
+    the first is not on the outer face). Expectata: the crossing graph plotter_svg.Primal builds from the same
+    cert, crossing for crossing (crossings matched by their faces): the same arcs, each on the same curve; the same
+    orbits of crossings and of arcs; the same outer face, the same way round or the other (the vendored one's way
+    round depends on PYTHONHASHSEED), with the shift to match; and curve 0's crossings in the same order, one way round
+    or the other. And plotter_svg.layout() makes the same drawing of either, every crossing within 1e-9 of where it
+    should be, but turned (and reflected, if the outer face goes the other way round)."""
+    bad = []
+    tmp = tempfile.TemporaryDirectory()
+    flipped = Path(tmp.name) / 'venn-07-reversed.json'
+    flipped.write_text(json.dumps({'n': 7, 'faces': json.loads(cert_path(7).read_text())['faces'][::-1]},
+                                  separators=(',', ':')))
+    for n, path in [(n, cert_path(n)) for n in (7, 11, 13)] + [(7, flipped)]:
+        F = cert.read(path, n)
+        P, Q = cert.Primal(F, n), plotter_svg.Primal(str(path))
+        ours = {frozenset(f): v for v, f in enumerate(F.tolist())}
+        pi = np.array([ours[frozenset(int(s[::-1], 2) for s in f)] for f in Q.faces])   # Q's crossing u is P's pi[u]
+        arcs = lambda src, dst, bit: {(int(a), int(b), int(c)) for a, b, c in zip(src, dst, bit)}
+        q_bit = [Q.curve_of[(int(u), int(w))] for u, w in zip(Q.esrc, Q.edst)]
+        outer, cycle = pi[Q.outer].tolist(), pi[Q.cycles[0]].tolist()
+        outer = outer[outer.index(P.outer[0]):] + outer[:outer.index(P.outer[0])]           # both from P's start
+        cycle = cycle[cycle.index(P.cycle0[0]):] + cycle[:cycle.index(P.cycle0[0])]
+        reverse = lambda c: c[:1] + c[:0:-1]                       # the same cycle the other way round, same start
+        same_way = outer == P.outer
+        zq = np.empty(P.V, complex)
+        zq[pi] = plotter_svg.layout(Q, iters=300, power=1.0, damp=0.5)
+        zq = zq if same_way else np.conj(zq)
+        zp = plotter_svg.layout(P, iters=300, power=1.0, damp=0.5)
+        r = zp[P.outer[0]] / zq[P.outer[0]]
+        for what, ok in (
+                ('arcs', arcs(P.esrc, P.edst, P.ebit) == arcs(pi[Q.esrc], pi[Q.edst], q_bit)),
+                ('orbits of crossings', orbits(P.orb.tolist(), range(P.V)) == orbits(Q.orb[np.argsort(pi)].tolist(), range(P.V))),
+                ('orbits of arcs', orbits(P.eorb.tolist(), [frozenset(e) for e in zip(P.esrc.tolist(), P.edst.tolist())])
+                 == orbits(Q.eorb.tolist(), [frozenset(e) for e in zip(pi[Q.esrc].tolist(), pi[Q.edst].tolist())])),
+                ('outer face', P.outer in (outer, reverse(outer))),
+                ('shift', P.shift == (Q.shift if same_way else n - Q.shift)),
+                ('curve 0', P.cycle0.tolist() in (cycle, reverse(cycle))),
+                ('layout', abs(abs(r) - 1) < 1e-9 and float(np.abs(zp - r * zq).max()) < 1e-9)):
+            if not ok:
+                bad.append(f'{path.name}: not the same {what}')
+    tmp.cleanup()
+    return bad
 
 
 @qual
@@ -340,29 +502,43 @@ def qual_candidate_pairs():
 def qual_svg_matches_cert():
     """Replicata: read img/venn-NN.svg, sample its curves, find every crossing, label regions by
     walking each curve. Expectata: no self-intersections, exactly 2^n - 2 crossings, both curves
-    through a crossing agree on its four region labels, and the crossings are exactly the cert's faces."""
+    through a crossing agree on its four region labels, and the crossings are exactly the cert's faces.
+    (The crossings are found in one sector, as drawn_faces says, so this also asserts that the curves are the path
+    turned by multiples of 360/n degrees, which qual_svg_symmetric checks too, and that no sampled segment spans 90
+    degrees or more about the page centre, as none comes near it.)"""
     bad = []
     for n in DRAWN:
-        nets, page, _ = read_svg(svg_path(n))
-        assert len(nets) == n, (len(nets), n)
-        lens = np.concatenate([np.linalg.norm(c[:, 3] - c[:, 0], axis=1) for c in nets])
-        polys = [sample(c, float(np.median(lens)) / 6)[0] for c in nets]
-        found, npts = drawn_faces(polys)
+        npts, faces, mismatched = drawn_faces(svg_path(n), n)
         if npts != (1 << n) - 2:
             bad.append(f'n={n}: {npts} crossings drawn, not {(1 << n) - 2}')
             continue
-        by = {}
-        for pid, face in found:
-            by.setdefault(pid, set()).add(face)
-        if any(len(v) != 1 for v in by.values()):
-            bad.append(f'n={n}: {sum(len(v) != 1 for v in by.values())} crossings labelled differently '
-                       f'by their two curves')
+        if mismatched:
+            bad.append(f'n={n}: {mismatched} crossings labelled differently by their two curves')
             continue
-        drawn = {next(iter(v)) for v in by.values()}
-        cert = {frozenset(row) for row in read_cert(n).tolist()}
-        if drawn != cert:
-            bad.append(f'n={n}: {len(drawn - cert)} drawn faces not in the cert, '
-                       f'{len(cert - drawn)} cert faces not drawn')
+        drawn, cert = distinct(faces), distinct(read_cert(n))
+        both = len(drawn) + len(cert) - len(distinct(np.concatenate([drawn, cert])))
+        if not len(drawn) == len(cert) == both:
+            bad.append(f'n={n}: {len(drawn) - both} drawn faces not in the cert, '
+                       f'{len(cert) - both} cert faces not drawn')
+    return bad
+
+
+@qual
+def qual_svg_reproducible():
+    """Replicata: draw each n up to 13 again as `python3 venn.py draw N` does, into a temporary file, under a
+    PYTHONHASHSEED other than this process's. Expectata: byte for byte the SVG in img/, so the drawings are what the
+    code makes, and depend on nothing else (until the third session the plotter's order of crossings, and so each
+    curve's first point, depended on PYTHONHASHSEED)."""
+    script = ('import sys, venn; from pathlib import Path; n = int(sys.argv[1]); '
+              'venn.write_svg(Path(sys.argv[2]), n, *venn.DRAWER[n](n))')
+    bad = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for n in (2, 3, 5, 7, 11, 13):
+            out = Path(tmp) / f'venn-{n:02d}.svg'
+            subprocess.run([sys.executable, '-c', script, str(n), str(out)], cwd=HERE, check=True,
+                           env={**os.environ, 'PYTHONHASHSEED': '12345'}, capture_output=True)
+            if out.read_bytes() != svg_path(n).read_bytes():
+                bad.append(f'n={n}: drawn again, not the bytes of {svg_path(n).relative_to(HERE)}')
     return bad
 
 
@@ -604,6 +780,15 @@ def qual_viewer_linked():
     view.html?n=N, the viewer."""
     cards = {int(c['n']): c for c in parse_page().cards}
     return [f'n={n}: the card links to {cards[n]["links"]}' for n in VIEWED if f'view.html?n={n}' not in cards[n]['links']]
+
+
+@qual
+def qual_png_only():
+    """Replicata: on index.html, click the picture on the card for each n whose drawing view.html can't show (23, with
+    8,388,606 crossings). Expectata: it opens the PNG the card shows, img/venn-NN.png."""
+    cards = {int(c['n']): c for c in parse_page().cards}
+    return [f'n={n}: the card shows {cards[n]["imgs"]} and links to {cards[n]["links"]}' for n in PNG_ONLY
+            for png in [f'img/venn-{n:02d}.png'] if cards[n]['imgs'] != [png] or png not in cards[n]['links']]
 
 
 @qual

@@ -19,23 +19,24 @@ Jargon (see also quals.py):
          n-1,n-2,...,2, and alpha^r+ = alpha reversed with 1 added to each entry
          (ibid., Theorem 1).
 """
+import gzip
 import hashlib
 import json
 import math
-import multiprocessing
 import re
 import struct
 import subprocess
 import sys
 import tempfile
 import urllib.request
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
+import cert
+
 HERE = Path(__file__).resolve().parent
-DRAWN = (2, 3, 5, 7, 11, 13, 17, 19)
+DRAWN = (2, 3, 5, 7, 11, 13, 17, 19, 23)
 
 # The alpha of each monotone diagram shown, copied from the papers named.
 ALPHA = {
@@ -64,12 +65,15 @@ ALPHA = {
          7, 6, 5, 6, 7, 8, 7, 6, 5, 6, 7, 5, 6, 4, 5, 6, 7, 6, 5, 6, 5, 4, 5, 4],
 }
 
-# Non-monotone diagrams: certs from github.com/dzoba/venn17 (CC BY 4.0), pinned to a commit and checked by
-# SHA-256. These two are the ones formally verified in Lean 4.
+# Non-monotone diagrams: certs from github.com/dzoba/venn17 (CC BY 4.0), checked by SHA-256. These three are the ones
+# formally verified in Lean 4. The 17 and 19 are in the repo, pinned to a commit; the 23, at 889 MB, is a release asset,
+# gzipped, and its SHA-256 is the one the repo's README publishes, that of the JSON unzipped.
 DZOBA = 'https://raw.githubusercontent.com/dzoba/venn17/e89d6f6f8cf17294c5b32e0406088684557fbde4/certificates/'
 FETCHED = {
-    17: ('venn17-local-c3-s2.json', 'c178d7bdde6e02b1b0c2780339434095d3633b8bb77a7293e9d575d04ad7ae77'),
-    19: ('venn19-closure-s196002.json', 'ed26b3baa6e5c02bc3a4239b1dfbf84d66f731cad2dd2805a8c1770e2c1fdb5d'),
+    17: (DZOBA + 'venn17-local-c3-s2.json', 'c178d7bdde6e02b1b0c2780339434095d3633b8bb77a7293e9d575d04ad7ae77'),
+    19: (DZOBA + 'venn19-closure-s196002.json', 'ed26b3baa6e5c02bc3a4239b1dfbf84d66f731cad2dd2805a8c1770e2c1fdb5d'),
+    23: ('https://github.com/dzoba/venn17/releases/download/v1.3/venn23-c25-s230025.json.gz',
+         'adc5a02eeaac6e49ac56ed9acfe6aebf5325ca13ebe070486c792b0d80eae2b1'),
 }
 assert sorted(ALPHA) + sorted(FETCHED) == list(DRAWN)
 
@@ -121,33 +125,50 @@ def certs():
     (HERE / 'certs').mkdir(exist_ok=True)
     for n in ALPHA:
         cert_path(n).write_text(json.dumps(cert_from_xseq(n), separators=(',', ':')) + '\n')
-    for n, (name, sha) in FETCHED.items():
-        data = urllib.request.urlopen(DZOBA + name, timeout=300).read()
-        assert hashlib.sha256(data).hexdigest() == sha, f'{name} does not match its published SHA-256'
-        cert_path(n).write_bytes(data)
+    for n, (url, sha) in FETCHED.items():
+        fetch(url, sha, cert_path(n))
 
 
-# Drawing. Each drawer writes an SVG with one closed path of cubic Beziers per curve, id curve-i for the
-# curve of bit i; compact() then rewrites it as curve 0 plus rotations of it (see there), with no width and
-# height, so a browser fits it to the window, and it is rendered to a PNG_PX-wide PNG with lines about 18/n
-# pixels wide. Coordinates have three decimals (DECIMALS for the plotter's), and bundles of nearly parallel
-# curves at n = 17 sit closer together than a thousandth of a 500-unit disk, so the disk is 50000 units
-# across (page 51200 with margins).
+def fetch(url, sha, path):
+    """Download url to path, unzipped if its name ends .gz, asserting that what is written has SHA-256 sha (it is
+    written beside path first, and moved there only then)."""
+    part, h = path.with_suffix('.part'), hashlib.sha256()
+    with urllib.request.urlopen(url, timeout=300) as r, open(part, 'wb') as f:
+        src = gzip.GzipFile(fileobj=r) if url.endswith('.gz') else r
+        while chunk := src.read(1 << 24):
+            h.update(chunk)
+            f.write(chunk)
+    assert h.hexdigest() == sha, f'{url} does not match its published SHA-256'
+    part.rename(path)
+
+
+# Drawing. Each drawer gives curve 0 as cubic Beziers (control nets, in page units) and the shift s that places the
+# others: curve i is curve 0 turned about the page centre by turn(s i, n) degrees. write_svg() writes curve 0 once
+# and each curve as a turned copy of it (see there), with no width and height, so a browser fits it to the window,
+# and it is rendered to a PNG_PX-wide PNG with lines about 18/n pixels wide. Coordinates have DECIMALS places, and
+# bundles of nearly parallel curves at n = 17 sit closer together than a thousandth of a 500-unit disk, so the disk
+# is 50000 units across (page 51200 with margins).
 #
-# Two ways to draw, picked by DRAWER below (the one branch in this file): the n = 2, 3 and 5 diagrams
-# are drawn as their classic congruent circles and ellipses; every other n goes through Dzoba's plotter
-# (vendor/venn17/plotter_svg.py, MIT), which lays out the cert's crossing graph and smooths it and
-# checks its own output. Both are checked against the certs by quals.py.
+# Two ways to draw, picked by DRAWER below (the one branch between them): the n = 2, 3 and 5 diagrams are drawn as
+# their classic congruent circles and ellipses; every other n goes through Dzoba's plotter
+# (vendor/venn17/plotter_svg.py, MIT), which lays out the cert's crossing graph, and is smoothed and checked here.
+# Both are checked against the certs by quals.py.
 PAGE, DIAMETER, MARGIN = 51200.0, 50000.0, 600.0
 PNG_PX = 1600
 # vendor/venn17 holds plotter/plotter_svg.py and verify/{interval_growth,gks_scaffold,gks_chains}.py copied
 # unchanged from github.com/dzoba/venn17 at commit e89d6f6f8cf17294c5b32e0406088684557fbde4 (MIT, see LICENSE).
 sys.path.insert(0, str(HERE / 'vendor' / 'venn17'))
 import plotter_svg  # noqa: E402
-from geom import intersections, nets, rotate, sample  # noqa: E402
+from geom import candidate_pairs, rotate, sample, segment_hits  # noqa: E402
 
 
 def stroke(n): return 18.0 / n * PAGE / PNG_PX
+
+
+def turn(k, n):
+    """Rotation k of n, 360 k / n degrees, as the SVG writes it (to 12 significant digits), so that the smoothing
+    check turns curve 0 exactly as a reader of the SVG does."""
+    return float(f'{360 * k / n:.12g}')
 
 
 # Congruent ellipses with semi-axes a and b, centred at distance d from the centre at angles
@@ -163,146 +184,161 @@ CONICS = {
 KAPPA = 4 * (math.sqrt(2) - 1) / 3   # cubic Bezier handle length for a quarter circle
 
 
-def draw_conics(n, svg):
+def draw_conics(n):
+    """Ellipse 0 as control nets, and the shift 1: ellipse j, at angle phase - 2 pi j / n (the direction that matches
+    the labelling of cert_from_xseq), is ellipse 0 turned by 360 j / n degrees in the SVG's coordinates, y down."""
     p = CONICS[n]
-    # unit circle as four cubic spans, then the affine map of each ellipse
+    # unit circle as four cubic spans, then the affine map of the ellipse
     c = [(1, 0), (1, KAPPA), (KAPPA, 1), (0, 1), (-KAPPA, 1), (-1, KAPPA), (-1, 0), (-1, -KAPPA),
          (-KAPPA, -1), (0, -1), (KAPPA, -1), (1, -KAPPA)]
     unit = np.array(c + c[:1], float)
-    ellipses = []
-    for j in range(n):
-        th = p['phase'] - 2 * math.pi * j / n     # this direction matches the labelling of cert_from_xseq
-        ang = th + p['psi']
-        R = np.array([[math.cos(ang), -math.sin(ang)], [math.sin(ang), math.cos(ang)]])
-        pts = (unit * [p['a'], p['b']]) @ R.T + p['d'] * np.array([math.cos(th), math.sin(th)])
-        ellipses.append(pts)
-    reach = max(float(np.linalg.norm(e, axis=1).max()) for e in ellipses)
-    scale = DIAMETER / 2 / reach
-    fmt = plotter_svg.fmt
-    paths = []
-    for e in ellipses:
-        q = np.stack([e[:, 0] * scale + PAGE / 2, -e[:, 1] * scale + PAGE / 2], 1)
-        spans = ' '.join(f'C{fmt(q[k,0])},{fmt(q[k,1])} {fmt(q[k+1,0])},{fmt(q[k+1,1])} '
-                         f'{fmt(q[k+2,0])},{fmt(q[k+2,1])}' for k in range(1, 13, 3))
-        paths.append(f'M{fmt(q[0,0])},{fmt(q[0,1])} {spans} Z')
-    plotter_svg.write_svg(svg, paths, plotter_svg.palette(n), PAGE, stroke(n))
+    th = p['phase']
+    ang = th + p['psi']
+    R = np.array([[math.cos(ang), -math.sin(ang)], [math.sin(ang), math.cos(ang)]])
+    e = (unit * [p['a'], p['b']]) @ R.T + p['d'] * np.array([math.cos(th), math.sin(th)])
+    q = np.stack([e[:, 0], -e[:, 1]], 1) * (DIAMETER / 2 / float(np.linalg.norm(e, axis=1).max())) + PAGE / 2
+    return np.stack([q[0:12:3], q[1:13:3], q[2:13:3], q[3:13:3]], 1), 1
 
 
 TENSION, CAP, RIM_KNOTS, BULGE = 0.9, 0.42, 5, 1.04   # the plotter's defaults
 
 
-def draw_plotter(n, svg):
+def draw_plotter(n):
     """Lay out the cert's crossing graph with Dzoba's plotter (an exactly n-fold symmetric weighted
-    Tutte embedding, then a radial warp), and smooth each curve with Catmull-Rom splines through its
-    crossings. Smoothing can make curves cross between crossings; wherever it does, the tension at the
-    crossings bounding the offending arcs is cut, by whole rotation orbits so the symmetry is kept,
-    down to straight arcs, which are planar because the layout is. This is the plotter's main()
-    with its planarity sweep replaced by smoothing_offenders. The layout runs in a child process, so
-    the 2 GB its crossing graph takes at n = 19 is given back before smoothing_offenders takes its
-    own; the two at once do not fit in the 6 GB this was built in."""
-    with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context('spawn')) as pool:
-        knots, kvid, orb = pool.submit(plotter_layout, n).result()
-    smooth(n, svg, knots, kvid, orb)
+    Tutte embedding, then a radial warp), and smooth curve 0, and so by the symmetry every curve, with
+    Catmull-Rom splines through its crossings. Smoothing can make curves cross between crossings;
+    wherever it does, the tension at the crossings bounding the offending arcs is cut, by whole
+    rotation orbits so the symmetry is kept, down to straight arcs, which are asserted first not to
+    cross. This is the plotter's main() with its planarity sweep replaced by offenders(), and done for
+    curve 0 alone."""
+    knots, kvid, orb, kof, s = plotter_layout(n)
+    return smooth(n, knots, kvid, orb, kof, s), s
 
 
 def plotter_layout(n):
-    """Each curve's knots (m x 2, page coordinates), the crossing id of each knot (-1 for the extra
-    knots bowing the outer ring), and the rotation orbit id of each crossing."""
-    P = plotter_svg.Primal(str(cert_path(n)))
+    """Curve 0's knots (m x 2, page coordinates), the crossing of each knot (-1 for the extra knots bowing the outer
+    ring), and the orb, kof and shift of the crossing graph (see cert.Primal), which place every other crossing:
+    crossing v of curve 0 turned by turn(k, n) degrees is crossing rho^j(v), where s j = -k mod n."""
+    P = cert.Primal(cert.read(cert_path(n), n), n)
     z = plotter_svg.layout(P, iters=300, power=1.0, damp=0.5)
     # The radial warp carries the second ring of crossings out to radius `rim` (a fraction of the outer
     # ring's); it has to stay inside the n-gon of outer crossings, whose edges come within cos(pi/n)
-    # of the centre. (The plotter's default, 0.95, breaks planarity for n <= 7.)
-    z, _ = plotter_svg.radial_warp(z, n, rim=math.cos(math.pi / n) - 0.05, aniso=1.8)
-    assert plotter_svg.layout_stats(P, z)['violations'] == 0, 'straight-line layout is not planar'
-    # Knots of each curve: its crossings in cycle order, plus RIM_KNOTS points bowing each arc of the
+    # of the centre. (The plotter's default, 0.95, breaks planarity for n <= 7.) Its other job,
+    # spreading the crossings out radially with the slope of log g(r) against log r held to
+    # [1/aniso, aniso], is turned off: where that slope varies along an arc, the straight arc between
+    # the warped ends strays from the warped image of the old one, so a crossing beside it can land on
+    # its other side, and with the plotter's 1.8 one did in every sector at n = 23. With aniso = 1 the
+    # warp scales every crossing but the n outer ones by one factor, so the arcs among those are as
+    # planar as Tutte's layout makes them, at any n; smooth() checks the rest.
+    z, _ = plotter_svg.radial_warp(z, n, rim=math.cos(math.pi / n) - 0.05, aniso=1.0)
+    # Knots of curve 0: its crossings in cycle order, plus RIM_KNOTS points bowing each arc of the
     # outer ring outward into a petal (as in the plotter's main()).
     outer_edges = {frozenset((P.outer[t], P.outer[(t + 1) % n])) for t in range(n)}
-    knots, kvid = [], []
-    for cyc in P.cycles:
-        pk, vk = [], []
-        for k, v in enumerate(cyc):
-            pk.append(z[v])
-            vk.append(v)
-            w = cyc[(k + 1) % len(cyc)]
-            # zero or RIM_KNOTS extra knots, depending on whether v-w is an outer-ring arc
-            on_rim = frozenset((v, w)) in outer_edges
-            a0 = np.angle(z[v])
-            da = 2 * math.pi / n * np.sign(math.remainder(float(np.angle(z[w]) - a0), 2 * math.pi))
-            for f in [(j + 1) / (RIM_KNOTS + 1) for j in range(RIM_KNOTS * on_rim)]:
-                pk.append(BULGE * abs(z[v]) * np.exp(1j * (a0 + f * da)))
-                vk.append(-1)
-        knots.append(np.stack([np.real(pk), -np.imag(pk)], 1))
-        kvid.append(np.array(vk))
-    probe = np.concatenate([plotter_svg.sample_bezier(
-        plotter_svg.bezier_controls(k, np.full(len(k), TENSION), CAP)[0], 8).reshape(-1, 2) for k in knots])
-    scale = DIAMETER / (2.0 * float(np.linalg.norm(probe, axis=1).max()))
-    return [k * scale + PAGE / 2 for k in knots], kvid, P.orb
+    cyc = P.cycle0.tolist()
+    pk, vk = [], []
+    for k, v in enumerate(cyc):
+        pk.append(z[v])
+        vk.append(v)
+        w = cyc[(k + 1) % len(cyc)]
+        # zero or RIM_KNOTS extra knots, depending on whether v-w is an outer-ring arc
+        on_rim = frozenset((v, w)) in outer_edges
+        a0 = np.angle(z[v])
+        da = 2 * math.pi / n * np.sign(math.remainder(float(np.angle(z[w]) - a0), 2 * math.pi))
+        for f in [(j + 1) / (RIM_KNOTS + 1) for j in range(RIM_KNOTS * on_rim)]:
+            pk.append(BULGE * abs(z[v]) * np.exp(1j * (a0 + f * da)))
+            vk.append(-1)
+    knots = np.stack([np.real(pk), -np.imag(pk)], 1)
+    probe = plotter_svg.sample_bezier(plotter_svg.bezier_controls(knots, np.full(len(knots), TENSION), CAP)[0], 8)
+    scale = DIAMETER / (2.0 * float(np.linalg.norm(probe.reshape(-1, 2), axis=1).max()))
+    return knots * scale + PAGE / 2, np.array(vk), P.orb, P.kof, P.shift
 
 
-def smooth(n, svg, knots, kvid, orb):
-    tens = np.full(len(orb), TENSION)
+def smooth(n, knots, kvid, orb, kof, s):
+    """Curve 0's control nets, rounded to DECIMALS places as the SVG will hold them, with the tension at its crossings
+    cut, by whole orbits, wherever the drawing would cross itself between crossings (see offenders)."""
+    def nets(tension):   # tension: one per orbit of crossings
+        t = np.where(kvid >= 0, tension[orb[np.maximum(kvid, 0)]], TENSION)
+        return np.round(plotter_svg.bezier_controls(knots, t, CAP)[0], DECIMALS)
+    norb = len(orb) // n
+    straight = offenders(n, nets(np.zeros(norb)), kvid, orb, kof, s)
+    assert len(straight) == 0, f'with straight arcs, {len(straight)} orbits of crossings bound arcs that cross'
+    tension = np.full(norb, TENSION)
     for attempt in range(8):
-        # as compact() will store them, so the check sees exactly what the file will hold: curve 0 rounded to DECIMALS
-        # places, and each other curve that, rotated
-        ctrl = stored([plotter_svg.bezier_controls(k, np.where(v >= 0, tens[np.maximum(v, 0)], TENSION), CAP)[0]
-                       for k, v in zip(knots, kvid)])
-        bad = smoothing_offenders(ctrl, kvid)
-        print(f'n={n} smoothing attempt {attempt}: {len(bad)} crossings bound arcs that cross', file=sys.stderr)
+        ctrl = nets(tension)
+        bad = offenders(n, ctrl, kvid, orb, kof, s)
+        print(f'n={n} smoothing attempt {attempt}: {len(bad)} orbits of crossings bound arcs that cross', file=sys.stderr)
         if len(bad) == 0:
             break
-        hot = np.isin(orb, orb[bad])
-        tens[hot] = tens[hot] * 0.35 * (attempt < 2)   # cut to 35%, and from the third try on to 0
+        tension[bad] *= 0.35 * (attempt < 2)   # cut to 35%, and from the third try on to 0
     assert len(bad) == 0, 'smoothing still crosses after eight attempts'
-    fmt = lambda x: f'{x:.{DECIMALS}f}'.rstrip('0').rstrip('.')
-    paths = [' '.join([f'M{fmt(c[0, 0, 0])},{fmt(c[0, 0, 1])}']
-                      + [f'C{fmt(x1)},{fmt(y1)} {fmt(x2)},{fmt(y2)} {fmt(x3)},{fmt(y3)}'
-                         for (x1, y1), (x2, y2), (x3, y3) in c[:, 1:].tolist()] + ['Z'])
-             for c in ctrl]
-    plotter_svg.write_svg(svg, paths, plotter_svg.palette(n), PAGE, stroke(n))
+    return ctrl
 
 
-def smoothing_offenders(ctrl, kvid):
-    """Crossing ids at which the sampled splines go wrong, sampled exactly as quals.py samples the SVG:
-    every crossing knot must be where its two curves cross exactly once, and nothing else may cross.
-    An intersection is that crossing when its two segments' spans both end at the same crossing knot.
-    The offenders are the crossings bounding the arcs at a knot that gets other than one such
-    intersection, and those bounding both arcs of any other intersection or degenerate contact."""
-    lens = np.concatenate([np.linalg.norm(c[:, 3] - c[:, 0], axis=1) for c in ctrl])
-    step = float(np.median(lens)) / 6
-    polys, ends, arcs = [], [], []
-    for c, v in zip(ctrl, kvid):
-        pts, span = sample(c, step)
-        polys.append(pts)
-        ends.append(np.stack([v, np.roll(v, -1)], 1).astype(np.int32)[span])   # knot ids at the span's ends
-        # the crossings bounding each span's arc: the last crossing knot at or before the span's start,
-        # and the first one after it (wrapping round the closed curve)
-        m = len(v)
-        ar = np.arange(m)
-        before = v[np.maximum.accumulate(np.where(v >= 0, ar, -1))]
-        nxt = np.minimum.accumulate(np.where(v >= 0, ar, m)[::-1])[::-1]
-        nxt = np.append(nxt[1:], m)
-        after = v[np.where(nxt < m, nxt, int(np.flatnonzero(v >= 0)[0]))]
-        arcs.append(np.stack([before, after], 1).astype(np.int32)[span])
-    ca, sa, _, cb, sb, _, _, touches = intersections(polys)
-    first = np.cumsum([0] + [len(x) for x in polys])            # index of each curve's first segment
-    ends, arcs = np.concatenate(ends), np.concatenate(arcs)
-    ea, eb = ends[first[ca] + sa], ends[first[cb] + sb]
+def offenders(n, ctrl, kvid, orb, kof, s):
+    """The orbits of the crossings at which the drawing goes wrong: curve 0, the control nets ctrl with the crossing
+    kvid of each knot, and its turned copies, sampled exactly as quals.py samples the SVG. Every crossing must be
+    where its two curves cross exactly once, and nothing else may cross. An intersection is that crossing when its two
+    segments' spans both end at the same crossing knot. The offenders are the crossings bounding the arcs at a knot
+    that gets other than one such intersection, and those bounding both arcs of any other intersection or degenerate
+    contact.
+
+    By the symmetry it is enough to look at one sector, the angles [0, 360/n) degrees about the page centre (in the
+    SVG's coordinates, y down): every intersection is a turned copy of exactly one in it, both of whose segments meet
+    it. So this samples curve 0 once, takes the segments of each turned copy that meet the sector, and keeps the
+    intersections among them that lie in it. The crossings of the whole drawing are told apart by naming crossing
+    rho^j(v), v a crossing of curve 0, orb[v] n + (kof[v] + j) mod n, where rho^j turns curve 0 as the copy is (see
+    plotter_layout)."""
+    c, theta, inverse = PAGE / 2, 2 * math.pi / n, pow(s, -1, n)
+    pts, span = sample(ctrl, float(np.median(np.linalg.norm(ctrl[:, 3] - ctrl[:, 0], axis=1))) / 6)
+    m, ar = len(kvid), np.arange(len(kvid))
+    ends = np.stack([kvid, np.roll(kvid, -1)], 1)[span]   # knot crossings at each segment's span's ends, or -1
+    # the crossings bounding each segment's arc: the last crossing knot at or before its span's start, and the first
+    # one after it (wrapping round the closed curve)
+    before = kvid[np.maximum.accumulate(np.where(kvid >= 0, ar, -1))]
+    nxt = np.minimum.accumulate(np.where(kvid >= 0, ar, m)[::-1])[::-1]
+    nxt = np.append(nxt[1:], m)
+    after = kvid[np.where(nxt < m, nxt, int(np.flatnonzero(kvid >= 0)[0]))]
+    arcs = np.stack([before, after], 1)[span]
+    # the segments of copy k that meet the sector, from the angles each segment spans (none passes the centre)
+    A, B = pts, np.roll(pts, -1, 0)
+    pa, pb = np.arctan2(A[:, 1] - c, A[:, 0] - c), np.arctan2(B[:, 1] - c, B[:, 0] - c)
+    d = np.remainder(pb - pa + math.pi, 2 * math.pi) - math.pi
+    lo, width = np.where(d >= 0, pa, pb), np.abs(d)
+    seg = [np.flatnonzero((beta <= theta + 1e-9) | (beta + width >= 2 * math.pi - 1e-9))
+           for beta in (np.remainder(lo + math.radians(turn(k, n)), 2 * math.pi) for k in range(n))]
+    copy = np.concatenate([np.full(len(i), k, np.int16) for k, i in enumerate(seg)])
+    A2 = np.concatenate([rotate(A[i], PAGE, turn(k, n)) for k, i in enumerate(seg)])
+    B2 = np.concatenate([rotate(B[i], PAGE, turn(k, n)) for k, i in enumerate(seg)])
+    seg = np.concatenate(seg)
+    j = (-copy.astype(np.int64) * inverse) % n
+
+    def name(x):   # crossings of curve 0 (or -1) as named in the whole drawing, for each copy's segment
+        x = x[seg]
+        return np.where(x >= 0, orb[np.maximum(x, 0)] * n + (kof[np.maximum(x, 0)] + j[:, None]) % n, -1)
+    E, R = name(ends), name(arcs)
+    block = 2_000_000                       # candidate pairs tested at a time, to bound memory
+    nseg = np.full(len(seg), len(pts), np.int32)
+    hits = [segment_hits(A2, B2, copy, seg, nseg, i[q:q + block], jj[q:q + block])
+            for i, jj in candidate_pairs(0.5 * (A2 + B2), float(np.linalg.norm(B - A, axis=1).max()) * 1.0001)
+            for q in range(0, len(i), block)]
+    hi, hj, t, _, ti, tj = (np.concatenate(h) for h in zip(*hits))
+    X = A2[hi] + t[:, None] * (B2[hi] - A2[hi])
+    inside = np.remainder(np.arctan2(X[:, 1] - c, X[:, 0] - c), 2 * math.pi) < theta
+    hi, hj = hi[inside], hj[inside]
+    ea, eb = E[hi], E[hj]
     # the knot two crossing segments share, or -1 (in a simple Venn diagram no region has only two
     # sides, so two curves never run between the same two crossings and at most one of these four
     # comparisons can hold with id >= 0)
     shared = np.max(np.stack([np.where((ea[:, x] == eb[:, y]) & (ea[:, x] >= 0), ea[:, x], -1)
                               for x in (0, 1) for y in (0, 1)]), 0)
-    knot_ok = (ca != cb) & (shared >= 0)
-    V = max(int(v.max()) for v in kvid) + 1
-    hits = np.bincount(shared[knot_ok], minlength=V)
-    stray = [arcs[first[ca[~knot_ok]] + sa[~knot_ok]], arcs[first[cb[~knot_ok]] + sb[~knot_ok]],
-             arcs[first[touches[:, 0]] + touches[:, 1]], arcs[first[touches[:, 2]] + touches[:, 3]]]
-    # a knot crossed other than once is fixed by straightening the arcs at it, which takes the
+    knot = (copy[hi] != copy[hj]) & (shared >= 0)
+    hit = np.bincount(shared[knot] // n, minlength=len(orb) // n)
+    stray = np.concatenate([R[hi[~knot]], R[hj[~knot]], R[ti], R[tj]]).ravel() // n
+    # an orbit whose crossing is crossed other than once is fixed by straightening the arcs at it, which takes the
     # crossings at both ends of each of those arcs
-    miss = np.flatnonzero(hits != 1)
-    at_miss = arcs[np.isin(ends, miss).any(1)]
-    return np.unique(np.concatenate([miss, at_miss.ravel()] + [x.ravel() for x in stray]))
+    miss = np.flatnonzero(hit != 1)
+    at_miss = arcs[np.isin(np.where(ends >= 0, orb[np.maximum(ends, 0)], -1), miss).any(1)]
+    return np.unique(np.concatenate([miss, orb[at_miss.ravel()], stray]))
 
 
 DRAWER = {n: (draw_conics if n in CONICS else draw_plotter) for n in DRAWN}
@@ -310,65 +346,32 @@ DRAWER = {n: (draw_conics if n in CONICS else draw_plotter) for n in DRAWN}
 
 def draw(n):
     svg = HERE / 'img' / f'venn-{n:02d}.svg'
-    DRAWER[n](n, svg)
-    compact(svg)
+    write_svg(svg, n, *DRAWER[n](n))
     svg2png(svg, svg.with_suffix('.png'), PNG_PX)
 
 
-# A drawing's SVG holds curve 0 once, as <defs><path id="curve">, and draws curve i as <use id="curve-i"> of it rotated
-# about the page centre by a multiple of 360/n degrees. Both drawers make every curve a rotation of curve 0 (to within
-# the rounding of their coordinates), so this is the same drawing in 1/n of the bytes (62 MB down to 4.3 at n = 19), and
-# exactly symmetric; compact() asserts as much before it drops curves 1 to n - 1. The SVG has no width and height, so
-# that a browser opening it fits it to the window.
-ROUNDING = 0.002   # the most a coordinate can differ between two control points each rounded to three decimals
-# The places the plotter's drawings give coordinates to. Three were too few once curves 1 to n - 1 became rotations of
-# rounded curve 0: rotating it moves a point up to 0.0014 from where rounding that curve itself would, and at n = 19
-# straight arcs of different curves pass closer than that, so that 20 crossings stayed wrong however far smoothing was
-# cut back (the drawing made before compact() existed, each curve rounded on its own, missed them by luck).
+# The places coordinates are given to. Three were too few once curves 1 to n - 1 became turned copies of rounded curve
+# 0: turning it moves a point up to 0.0014 from where rounding that curve itself would, and at n = 19 straight arcs of
+# different curves pass closer than that, so that 20 crossings stayed wrong however far smoothing was cut back.
 DECIMALS = 6
 
 
-def compact(svg):
-    """Rewrite the SVG of n paths that a drawer wrote as curve 0 plus n rotated <use>s of it, after asserting that each
-    curve i is, control point for control point, curve 0 rotated by 360 k / n degrees, each k from 0 to n - 1 once."""
-    text = svg.read_text()
-    page = float(re.search(r'viewBox="0 0 ([\d.]+) [\d.]+"', text).group(1))
-    curves = re.findall(r'<path id="curve-(\d+)" (fill="none" stroke="[^"]+" stroke-width="[^"]+" '
-                        r'stroke-linecap="round" stroke-linejoin="round") d="([^"]+)"/>', text)
-    n = len(curves)
-    assert [int(i) for i, _, _ in curves] == list(range(n)) and text.count('<path') == n, 'unexpected SVG'
-    full = [nets(d) for _, _, d in curves]
-    turned = [rotate(full[0], page, 360 * k / n) for k in range(n)]
-    multiples = [min(range(n), key=lambda k: matched(turned[k], f)[1]) for f in full]   # curve i is curve 0 turned by k/n
-    worst = max(matched(turned[k], f)[1] for k, f in zip(multiples, full))
-    assert sorted(multiples) == list(range(n)) and worst <= ROUNDING, f'curves are not rotations of curve 0: {multiples}, {worst}'
-    fmt, c = plotter_svg.fmt, plotter_svg.fmt(page / 2)
-    uses = ''.join(f'<use id="curve-{i}" href="#curve" {style} transform="rotate({360 * k / n:.12g} {c} {c})"/>\n'
-                   for (i, style, _), k in zip(curves, multiples))
+def write_svg(svg, n, ctrl, s):
+    """Write the drawing's SVG: curve 0, the control nets ctrl, once, as <defs><path id="curve">, and curve i as
+    <use id="curve-i"> of it turned about the page centre by turn(s i, n) degrees. So it is exactly symmetric, in 1/n of
+    the bytes that n paths would take (62 MB down to 4.2 at n = 19). It has no width and height, so that a browser
+    opening it fits it to the window."""
+    fmt = lambda x: f'{x:.{DECIMALS}f}'.rstrip('0').rstrip('.')
+    d = ' '.join([f'M{fmt(ctrl[0, 0, 0])},{fmt(ctrl[0, 0, 1])}']
+                 + [f'C{fmt(x1)},{fmt(y1)} {fmt(x2)},{fmt(y2)} {fmt(x3)},{fmt(y3)}'
+                    for (x1, y1), (x2, y2), (x3, y3) in ctrl[:, 1:].tolist()] + ['Z'])
+    c = fmt(PAGE / 2)
+    uses = ''.join(f'<use id="curve-{i}" href="#curve" fill="none" stroke="{colour}" stroke-width="{stroke(n)}" '
+                   f'stroke-linecap="round" stroke-linejoin="round" '
+                   f'transform="rotate({turn(s * i % n, n):.12g} {c} {c})"/>\n'
+                   for i, colour in enumerate(plotter_svg.palette(n)))
     svg.write_text(f'<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
-                   f'viewBox="0 0 {fmt(page)} {fmt(page)}">\n<defs><path id="curve" d="{curves[0][2]}"/></defs>\n'
-                   f'{uses}</svg>\n')
-
-
-def matched(a, b):
-    """Control nets a with their spans put in the order of nets b's (from any start, in either direction), and the most
-    any coordinate then differs between the two; (None, inf) if they have different numbers of spans. They are lined
-    up on the first inner control point of b's first span, which belongs to that curve alone (span ends are crossings,
-    which two curves share)."""
-    tries = [np.roll(g, -int(np.argmin(np.linalg.norm(g[:, 1] - b[0, 1], axis=1))), axis=0)
-             for g in (a, a[::-1, ::-1]) if len(g) == len(b)]
-    return min(((g, float(np.abs(g - b).max())) for g in tries), key=lambda x: x[1], default=(None, np.inf))
-
-
-def stored(curves):
-    """The curves (control nets, in page units) as compact() stores them: curve 0 rounded to DECIMALS places, and each
-    other curve that rotated by the multiple of 360/n degrees nearest it (asserted to be within the rounding), its
-    spans in the curve's own order."""
-    n = len(curves)
-    turned = [rotate(np.round(curves[0], DECIMALS), PAGE, 360 * k / n) for k in range(n)]
-    out = [min((matched(g, c) for g in turned), key=lambda x: x[1]) for c in curves]
-    assert max(gap for _, gap in out) <= ROUNDING, 'curves are not rotations of curve 0'
-    return [g for g, _ in out]
+                   f'viewBox="0 0 {fmt(PAGE)} {fmt(PAGE)}">\n<defs><path id="curve" d="{d}"/></defs>\n{uses}</svg>\n')
 
 
 def svg2png(svg, png, px):
