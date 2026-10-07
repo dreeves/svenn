@@ -41,8 +41,8 @@ from scipy.spatial import cKDTree
 from geom import candidate_pairs, intersections, sample
 
 HERE = Path(__file__).resolve().parent
-NS = (3, 5, 7, 11, 13, 17, 19, 23)     # every prime from 3 to the largest n with a known diagram
-DRAWN = (3, 5, 7, 11, 13, 17, 19)      # n for which a cert is available and a drawing is shown
+NS = (2, 3, 5, 7, 11, 13, 17, 19, 23)  # every prime up to the largest n with a known diagram
+DRAWN = (2, 3, 5, 7, 11, 13, 17, 19)   # n for which a cert is available and a drawing is shown
 PENDING = (23,)                        # n announced but with no downloadable cert yet
 assert DRAWN + PENDING == NS
 # SHA-256 of the two certs taken from github.com/dzoba/venn17: the ones formally verified in Lean 4
@@ -443,7 +443,7 @@ def parse_page():
 
 @qual
 def qual_page_cards():
-    """Replicata: open index.html. Expectata: one card per prime n from 3 to 23 in order, each stating
+    """Replicata: open index.html. Expectata: one card per prime n from 2 to 23 in order, each stating
     2^n regions and 2^n - 2 crossings (in data attributes and in its visible text), each showing an
     image file that exists in the repo."""
     p = parse_page()
@@ -557,6 +557,16 @@ def qual_link_preview():
               ('og:image:alt, present', bool(og('image:alt')), True),
               ('twitter:card', meta.get(('name', 'twitter:card')), 'summary_large_image')]
     return [f'{what} is {got!r}, not {want!r}' for what, got, want in checks if got != want]
+
+
+@qual
+def qual_page_english():
+    """Replicata: open the page in Safari, or in any browser on an iPhone (all of them WebKit). Expectata: every u
+    is drawn as a u. EB Garamond's locl feature for the Latin language draws u as v (and U as V), WebKit applies it
+    even under font-feature-settings: "locl" 0, and the page said lang="la", so on 2026-10-06 Safari showed
+    "Grünbavm" and "congrvent". The page is in English, so its one lang attribute is <html lang="en">."""
+    langs = [(t, a['lang']) for t, a in parse_page().tags if 'lang' in a]
+    return [] if langs == [('html', 'en')] else [f'lang attributes {langs}, not just <html lang="en">']
 
 
 @qual
