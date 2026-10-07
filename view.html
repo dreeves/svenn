@@ -291,7 +291,7 @@ addEventListener('keydown', e => {
 })
 addEventListener('resize', redraw)   // the picture last drawn was for the old window
 
-// The file holds curve 0 once and draws curve i as a <use> of it rotated about the page centre (venn.py's compact()):
+// The file holds curve 0 once and draws curve i as a <use> of it rotated about the page centre (venn.py's write_svg()):
 // 1/n of the bytes to download. Each curve becomes a path of its own here, its points rotated: Firefox drew 19's
 // rotated uses about 1.5 times slower than these paths (other browsers drew them about as fast), and the quals see
 // one path per curve.

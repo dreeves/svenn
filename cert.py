@@ -20,7 +20,7 @@ def read(path, n):
     """The faces of the cert at path, as a (2^n - 2) x 4 int64 array of labels in the order listed, read at a fixed
     stride and never parsed as a whole. Asserts that each face is written ["L","L","L","L"], each L n characters 0 or 1,
     with a comma between faces and no spaces, and that the rest of the file, with the faces taken out, is a JSON object
-    whose "n" is n."""
+    whose "n" is n and that has no other "faces"."""
     S = 4 * n + 14                                       # bytes per face, with the comma (or the closing ]) after it
     V = (1 << n) - 2
     cols = np.concatenate([np.arange(2 + (n + 3) * j, 2 + (n + 3) * j + n) for j in range(4)])
@@ -38,7 +38,9 @@ def read(path, n):
             assert (bits <= 1).all(), 'a label is not a string of 0s and 1s'
             out[a:a + len(rows)] = (bits.reshape(-1, 4, n) * w).sum(2)
             sep[a:a + len(rows)] = rows[:, -1]
-        rest = json.loads(head[:start] + b']' + f.read())
+        tail = f.read()
+    assert (head[:start] + tail).count(b'"faces"') == 1, 'the cert says "faces" more than once'
+    rest = json.loads(head[:start] + b']' + tail)
     assert (sep[:-1] == ord(',')).all() and sep[-1] == ord(']'), 'the faces are not one after another'
     assert rest['n'] == n and rest['faces'] == [], (rest['n'], n)
     return out
@@ -87,9 +89,11 @@ class Primal:
 
 
 def squares(F, n):
-    """T, a and b of each face, asserting that it is a square of the n-cube listed in cyclic order."""
+    """T, a and b of each face, asserting that it is a square of the n-cube listed in cyclic order: each label differs
+    from the next in one bit, and from the one opposite in the two bits of D."""
     T = F[:, 0] & F[:, 1] & F[:, 2] & F[:, 3]
     D = (F[:, 0] | F[:, 1] | F[:, 2] | F[:, 3]) ^ T
+    assert ((F[:, 0] ^ F[:, 2]) == D).all() and ((F[:, 1] ^ F[:, 3]) == D).all(), 'a face is not a square of the cube'
     a = low_bit(D)
     b = low_bit(D ^ (1 << a))
     assert ((1 << a) | (1 << b) == D).all(), 'a face is not a square of the cube'

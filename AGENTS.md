@@ -112,5 +112,5 @@ Numbers at 23: drawing it took 2 h 13 min wall and 60 min of CPU, peak footprint
 
 Things that may trip up the next instance:
 * At 23 the closest approach between arcs that share no crossing is 2.3e-5 page units, set by the Tutte layout's tight bundles whatever the warp. Rounding to six decimals and turning can put the two copies of a crossing 1.4e-6 apart, so the margin is about 16 times; five decimals would leave about 1.6.
-* Checks of a drawing with a zero-length span give counts that depend on floating point: segment_hits counts an exactly zero-length segment as touching everything it is paired with.
+* Checks of a drawing with a zero-length span give counts that depend on floating point: segment_hits counts an exactly zero-length segment as touching everything it is paired with when it comes first in the pair.
 * view.html can't show 23: it turns each use into a plain path, 23 paths of 729,449 spans each. A viewer for it would need tiles or a canvas.

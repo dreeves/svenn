@@ -282,10 +282,12 @@ def offenders(n, ctrl, kvid, orb, kof, s):
     that gets other than one such intersection, and those bounding both arcs of any other intersection or degenerate
     contact.
 
-    By the symmetry it is enough to look at one sector, the angles [0, 360/n) degrees about the page centre (in the
-    SVG's coordinates, y down): every intersection is a turned copy of exactly one in it, both of whose segments meet
-    it. So this samples curve 0 once, takes the segments of each turned copy that meet the sector, and keeps the
-    intersections among them that lie in it. The crossings of the whole drawing are told apart by naming crossing
+    By the symmetry it is enough to look at one sector, the angles 0 to 360/n degrees about the page centre (in the
+    SVG's coordinates, y down): every intersection is a turned copy of one in it, both of whose segments meet it. So
+    this samples curve 0 once, takes the segments of each turned copy that meet the sector, finds the intersections
+    among them, and keeps one of each set of turned copies. (Not those that lie in the sector: the file's angles have
+    12 significant digits, so the copies are turned copies of each other only to within about 1e-11 radians, and one
+    near an edge would be kept twice or not at all.) The crossings of the whole drawing are told apart by naming crossing
     rho^j(v), v a crossing of curve 0, orb[v] n + (kof[v] + j) mod n, where rho^j turns curve 0 as the copy is (see
     plotter_layout)."""
     c, theta, inverse = PAGE / 2, 2 * math.pi / n, pow(s, -1, n)
@@ -321,10 +323,14 @@ def offenders(n, ctrl, kvid, orb, kof, s):
     hits = [segment_hits(A2, B2, copy, seg, nseg, i[q:q + block], jj[q:q + block])
             for i, jj in candidate_pairs(0.5 * (A2 + B2), float(np.linalg.norm(B - A, axis=1).max()) * 1.0001)
             for q in range(0, len(i), block)]
-    hi, hj, t, _, ti, tj = (np.concatenate(h) for h in zip(*hits))
-    X = A2[hi] + t[:, None] * (B2[hi] - A2[hi])
-    inside = np.remainder(np.arctan2(X[:, 1] - c, X[:, 0] - c), 2 * math.pi) < theta
-    hi, hj = hi[inside], hj[inside]
+    hi, hj, _, _, ti, tj = (np.concatenate(h) for h in zip(*hits))
+    # an intersection is found once for each turned copy of it whose segments both meet the sector, which near its
+    # edges is twice: keep one of each, naming it by the two segments of curve 0 it lies on and how many sectors apart
+    # their copies are, which its turned copies share
+    M, gap = len(pts), (copy[hj].astype(np.int64) - copy[hi]) % n
+    first = np.unique(np.minimum((gap * M + seg[hi]) * M + seg[hj], ((n - gap) % n * M + seg[hj]) * M + seg[hi]),
+                      return_index=True)[1]
+    hi, hj = hi[first], hj[first]
     ea, eb = E[hi], E[hj]
     # the knot two crossing segments share, or -1 (in a simple Venn diagram no region has only two
     # sides, so two curves never run between the same two crossings and at most one of these four
@@ -358,8 +364,9 @@ DECIMALS = 6
 
 def write_svg(svg, n, ctrl, s):
     """Write the drawing's SVG: curve 0, the control nets ctrl, once, as <defs><path id="curve">, and curve i as
-    <use id="curve-i"> of it turned about the page centre by turn(s i, n) degrees. So it is exactly symmetric, in 1/n of
-    the bytes that n paths would take (62 MB down to 4.2 at n = 19). It has no width and height, so that a browser
+    <use id="curve-i"> of it turned about the page centre by turn(s i, n) degrees. So it is symmetric by construction (to
+    within the 12 significant digits of its angles), in 1/n of the bytes that n paths would take (62 MB down to 4.2 at
+    n = 19). It has no width and height, so that a browser
     opening it fits it to the window."""
     fmt = lambda x: f'{x:.{DECIMALS}f}'.rstrip('0').rstrip('.')
     d = ' '.join([f'M{fmt(ctrl[0, 0, 0])},{fmt(ctrl[0, 0, 1])}']

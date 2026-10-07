@@ -62,7 +62,8 @@ PUBLISHED_SHA256 = {
 PLACEHOLDER = {}
 CC_BY = 'https://creativecommons.org/licenses/by/4.0/'
 PNG_ONLY = (23,)   # n whose card links to its PNG: view.html can't show 8,388,606 crossings
-VIEWED = tuple(n for n in DRAWN if n not in PLACEHOLDER and n not in PNG_ONLY)   # n whose card opens view.html on this site's own drawing
+# n whose card opens view.html on this site's own drawing
+VIEWED = tuple(n for n in DRAWN if n not in PLACEHOLDER and n not in PNG_ONLY)
 PAGES = ('index.html', 'view.html')                        # the site's pages: the list, and the viewer
 DOMAIN = 'svenn.dreev.es'
 
@@ -389,8 +390,8 @@ def qual_cert_read():
     """Replicata: cert.read(certs/venn-NN.json, n), with which venn.py reads every cert, for each drawn n whose cert
     json.loads can read (all but 23's, 889 MB); then on copies of the 7's with a space after a comma, a label of 8
     characters, a 2 in a label, an apostrophe for a quote mark, a semicolon between faces, a face missing, a face too
-    many, and "n":8. Expectata: the faces json.loads gives, in the same order; and on each bad copy, an exception, not
-    faces."""
+    many, "n":8, and a second "faces" key, empty, after the first. Expectata: the faces json.loads gives, in the same
+    order; and on each bad copy, an exception, not faces."""
     bad = []
     for n in (2, 3, 5, 7, 11, 13, 17, 19):
         want = np.array([[int(s[::-1], 2) for s in f] for f in json.loads(cert_path(n).read_text())['faces']])
@@ -406,7 +407,8 @@ def qual_cert_read():
                        ('a semicolon between faces', t.replace('],[', '];[', 1)),
                        ('a face missing', t.replace(face + ',', '', 1)),
                        ('a face too many', t.replace(face, face + ',' + face, 1)),
-                       ('"n":8', t.replace('"n":7', '"n":8', 1))):
+                       ('"n":8', t.replace('"n":7', '"n":8', 1)),
+                       ('a second "faces" key', t.replace(']]}', ']],"faces":[]}', 1))):
         assert copy != t, what
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / 'c.json').write_text(copy)
@@ -435,7 +437,8 @@ def qual_crossing_graph():
     orbits of crossings and of arcs; the same outer face, the same way round or the other (the vendored one's way
     round depends on PYTHONHASHSEED), with the shift to match; and curve 0's crossings in the same order, one way round
     or the other. And plotter_svg.layout() makes the same drawing of either, every crossing within 1e-9 of where it
-    should be, but turned (and reflected, if the outer face goes the other way round)."""
+    should be, but turned (and reflected, if the outer face goes the other way round). And given the 7's faces with
+    the first written T, T|A, T, T|B, which is not a square of the cube, cert.Primal raises, as the vendored one does."""
     bad = []
     tmp = tempfile.TemporaryDirectory()
     flipped = Path(tmp.name) / 'venn-07-reversed.json'
@@ -460,7 +463,8 @@ def qual_crossing_graph():
         r = zp[P.outer[0]] / zq[P.outer[0]]
         for what, ok in (
                 ('arcs', arcs(P.esrc, P.edst, P.ebit) == arcs(pi[Q.esrc], pi[Q.edst], q_bit)),
-                ('orbits of crossings', orbits(P.orb.tolist(), range(P.V)) == orbits(Q.orb[np.argsort(pi)].tolist(), range(P.V))),
+                ('orbits of crossings',
+                 orbits(P.orb.tolist(), range(P.V)) == orbits(Q.orb[np.argsort(pi)].tolist(), range(P.V))),
                 ('orbits of arcs', orbits(P.eorb.tolist(), [frozenset(e) for e in zip(P.esrc.tolist(), P.edst.tolist())])
                  == orbits(Q.eorb.tolist(), [frozenset(e) for e in zip(pi[Q.esrc].tolist(), pi[Q.edst].tolist())])),
                 ('outer face', P.outer in (outer, reverse(outer))),
@@ -470,6 +474,13 @@ def qual_crossing_graph():
             if not ok:
                 bad.append(f'{path.name}: not the same {what}')
     tmp.cleanup()
+    F = cert.read(cert_path(7), 7)
+    F[0, 2] = F[0, 0]                     # the first face is T, T|A, T|A|B, T|B: make it T, T|A, T, T|B
+    try:
+        cert.Primal(F, 7)
+        bad.append('a face written T, T|A, T, T|B: built without an exception')
+    except Exception:
+        pass
     return bad
 
 
@@ -524,6 +535,39 @@ def qual_svg_matches_cert():
 
 
 @qual
+def qual_smoothing_edges():
+    """Replicata: lay out and smooth 7 as `python3 venn.py draw 7` does, find the intersection of its curves nearest an
+    edge of the sector venn.offenders() looks at (angles 0 to 360/7 degrees about the page centre), and turn curve 0 so
+    that this intersection lies 1e-12 or 1e-13 radians to either side of that edge. Expectata: offenders() finds
+    nothing wrong, every time, as with the drawing unturned: it is the same drawing turned. (The file's angles have 12
+    significant digits, so the copies of an intersection are turned copies of each other only to within about 1e-11
+    radians; a check that kept the intersections it found inside the sector would keep one near an edge twice or not
+    at all.)"""
+    import contextlib, io, venn
+    n = 7
+    with contextlib.redirect_stderr(io.StringIO()):   # smooth() reports its attempts
+        knots, kvid, orb, kof, s = venn.plotter_layout(n)
+        ctrl = venn.smooth(n, knots, kvid, orb, kof, s)
+    th, c = 2 * math.pi / n, venn.PAGE / 2
+    P = sample(ctrl, float(np.median(np.linalg.norm(ctrl[:, 3] - ctrl[:, 0], axis=1))) / 6)[0]
+    A = np.concatenate([rotate(P, venn.PAGE, venn.turn(k, n)) for k in range(n)])
+    B = np.concatenate([np.roll(rotate(P, venn.PAGE, venn.turn(k, n)), -1, 0) for k in range(n)])
+    cid, sid = np.repeat(np.arange(n), len(P)), np.tile(np.arange(len(P)), n)
+    reach = 2 * float(np.linalg.norm(B - A, axis=1).max())
+    i, j = np.concatenate([np.stack(p, 1) for p in candidate_pairs(0.5 * (A + B), reach)]).T
+    hi, _, t, _, _, _ = segment_hits(A, B, cid, sid, np.full(len(A), len(P)), i, j)
+    X = A[hi] + t[:, None] * (B[hi] - A[hi])
+    angle = np.arctan2(X[:, 1] - c, X[:, 0] - c)
+    off = float((angle - np.round(angle / th) * th)[np.argmin(np.abs(angle - np.round(angle / th) * th))])
+    bad = [] if len(venn.offenders(n, ctrl, kvid, orb, kof, s)) == 0 else ['unturned: offenders found']
+    for eps in (1e-12, -1e-12, 1e-13, -1e-13):
+        got = venn.offenders(n, rotate(ctrl, venn.PAGE, math.degrees(eps - off)), kvid, orb, kof, s)
+        if len(got):
+            bad.append(f'with the intersection {eps:+.0e} rad from the edge, offenders() finds orbits {got.tolist()}')
+    return bad
+
+
+@qual
 def qual_svg_reproducible():
     """Replicata: draw each n up to 13 again as `python3 venn.py draw N` does, into a temporary file, under a
     PYTHONHASHSEED other than this process's. Expectata: byte for byte the SVG in img/, so the drawings are what the
@@ -543,15 +587,30 @@ def qual_svg_reproducible():
 
 
 @qual
+def qual_png_matches_svg():
+    """Replicata: render each img/venn-NN.svg to a PNG as `python3 venn.py draw N` does (tools/svg2png.mjs, resvg,
+    venn.PNG_PX pixels wide). Expectata: byte for byte img/venn-NN.png, the picture each card shows (and, for 23, the
+    one view of it the site gives)."""
+    import venn
+    bad = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for n in DRAWN:
+            png = Path(tmp) / f'venn-{n:02d}.png'
+            venn.svg2png(svg_path(n), png, venn.PNG_PX)
+            if png.read_bytes() != svg_path(n).with_suffix('.png').read_bytes():
+                bad.append(f'n={n}: img/venn-{n:02d}.png is not what its SVG renders to')
+    return bad
+
+
+@qual
 def qual_svg_symmetric():
     """Replicata: read img/venn-NN.svg for each drawn n. Expectata: it is symmetric by construction, exactly the tree
-    venn.py's compact() writes: an <svg> with only a version and a viewBox, holding <defs> with one path, <path
+    venn.py's write_svg() writes: an <svg> with only a version and a viewBox, holding <defs> with one path, <path
     id="curve" d="...">, and then the n curves, <use id="curve-i" href="#curve">, each with just its stroke (fill none,
-    a colour, a width, round caps and joins) and a transform rotating that path about the page centre by a multiple of
-    360/n degrees, each multiple from 0 to n - 1 once (to within 1e-9 of a multiple). Nothing else, no other attribute
-    or element, so nothing can be drawn but those n rotations. (compact() asserts, before it keeps only curve 0, that
-    every curve the drawer made was such a rotation, to within the rounding of its coordinates; qual_svg_matches_cert
-    checks the result against the cert.)"""
+    a colour #rrggbb, a width over 0, round caps and joins) and a transform rotating that path about the page centre
+    by a multiple of 360/n degrees, each multiple from 0 to n - 1 once (to within 1e-9 of a multiple). Nothing else,
+    no other attribute or element, so nothing can be drawn but those n rotations. (The drawers make only curve 0, and
+    write_svg() the rotations; qual_svg_matches_cert checks the result against the cert.)"""
     svg, style = '{http://www.w3.org/2000/svg}', {'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin'}
     bad = []
     for n in DRAWN:
@@ -566,11 +625,12 @@ def qual_svg_symmetric():
                 or len(defs[0]):
             bad.append(f'n={n}: <defs> holds {[(d.tag, d.attrib.get("id")) for d in defs]}, not just <path id="curve" d>')
         for i, use in enumerate(kids[1:]):
-            want = (f'curve-{i}', '#curve', 'none', 'round', 'round', {'id', 'href', 'transform'} | style, 0)
-            got = (use.get('id'), use.get('href'), use.get('fill'), use.get('stroke-linecap'), use.get('stroke-linejoin'),
-                   set(use.attrib), len(use))
+            want = (f'curve-{i}', '#curve', 'none', True, True, 'round', 'round', {'id', 'href', 'transform'} | style, 0)
+            got = (use.get('id'), use.get('href'), use.get('fill'),
+                   bool(re.fullmatch(r'#[0-9a-f]{6}', use.get('stroke') or '')), float(use.get('stroke-width') or 0) > 0,
+                   use.get('stroke-linecap'), use.get('stroke-linejoin'), set(use.attrib), len(use))
             if got != want:
-                bad.append(f'n={n}: use {i} has id, href, fill, caps, joins, attributes, children {got}')
+                bad.append(f'n={n}: use {i} has id, href, fill, a colour, a width, caps, joins, attributes, children {got}')
         _, _, degrees = read_svg(svg_path(n))
         multiples = sorted(a * n / 360 for a in degrees)
         if not np.allclose(multiples, range(n), rtol=0, atol=1e-9):
@@ -602,10 +662,11 @@ class PageParser(html.parser.HTMLParser):
             self.cards.append(self.card)
         if tag == 'img':
             self.card['imgs'].append(a.get('src'))
-        for k in ('href', 'src'):
+        for k in ('href', 'src'):            # every URL the page links or loads, for qual_local_links and qual_links_live
             if a.get(k):
                 self.links.append(a[k])
-                self.card['links'].append(a[k])
+        if a.get('href'):                    # a card's links are what clicking in it opens; its images are in imgs
+            self.card['links'].append(a['href'])
         self.last = ('tag', tag)
 
     def handle_endtag(self, tag):
