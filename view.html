@@ -8,20 +8,9 @@
 <link rel="icon" href="img/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap">
+<link rel="stylesheet" href="site.css">
 <style>
-  :root {                                   /* index.html's colours */
-    --paper: #ffffff;
-    --ink: #1d2433;
-    --line: #e2e5ea;
-  }
-  * { box-sizing: border-box; }
-  html { background: var(--paper); color: var(--ink); touch-action: none; }   /* the viewer handles every drag and pinch itself, even over the controls */
-  body {
-    margin: 0;
-    font: 400 1.15rem/1.6 "EB Garamond", Garamond, Georgia, serif;
-    font-variant-numeric: oldstyle-nums;
-  }
-  a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+  html { touch-action: none; }   /* the viewer handles every drag and pinch itself, even over the controls */
   :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
   #stage {
     position: fixed;
@@ -31,27 +20,28 @@
     cursor: grab;
   }
   #stage.held { cursor: grabbing; }
+  #picture { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; pointer-events: none; }   /* see draw() */
   #stage svg { display: block; width: 100%; height: 100%; pointer-events: none; }   /* hit-testing 19's curves takes seconds */
   #stage path { vector-effect: non-scaling-stroke; stroke-width: var(--stroke); }
-  #top { position: fixed; top: 1rem; left: 1rem; display: flex; align-items: center; gap: 0.7rem; }
+  /* The controls: along the top, where you are (back arrow, number) and the tools (SVG link, zoom buttons); along the
+     bottom, the swatches, or in a landscape window a column of them along the right edge. At zoom 1 the drawing fits
+     in the space they leave (area()), so that none of them covers it. */
+  /* Narrow screens get less space between and around them (clamp), so the top row fits 320 pixels; narrower still,
+     it wraps, and area() makes room below it. */
+  #top, #curves { position: fixed; left: clamp(0.5rem, 3vw, 1rem); right: clamp(0.5rem, 3vw, 1rem); pointer-events: none; }   /* drags between controls reach the drawing */
+  #top > *, #curves > * { pointer-events: auto; }
+  #top { top: 1rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: clamp(0.3rem, 2vw, 0.7rem); }
+  #where, #tools { display: flex; align-items: center; gap: clamp(0.25rem, 1.5vw, 0.5rem); }
   h1 { margin: 0; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); font-weight: 500; font-size: 2rem; line-height: 1; }
-  #raw { position: fixed; top: 1.4rem; right: 1rem; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); line-height: 1; }
-  #bar {
-    position: fixed;
-    left: 1rem;
-    right: 1rem;
-    bottom: 1rem;
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 0.8rem;
-    pointer-events: none;                   /* drags between the controls reach the drawing */
+  #raw { margin-right: 0.3rem; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); line-height: 1; }
+  #curves { bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; }
+  @media (orientation: landscape) {   /* in vertical writing, a flex row wraps into columns that size right everywhere */
+    #curves { top: 4.5rem; left: auto; writing-mode: vertical-rl; }
+    #curves button { writing-mode: horizontal-tb; }
   }
-  #bar > * { pointer-events: auto; }
-  #curves { display: flex; flex-wrap: wrap; gap: 0.4rem; min-width: 0; }
   #curves button {
-    width: 1.6rem;
-    height: 1.6rem;
+    width: 2rem;
+    height: 2rem;
     padding: 0;
     border: 2px solid var(--paper);
     border-radius: 50%;
@@ -62,7 +52,6 @@
   /* its curve is hidden: fade the fill, not the opacity, which would fade the focus ring too */
   #curves button[aria-pressed="false"] { background: color-mix(in srgb, var(--colour, var(--line)) 25%, var(--paper)); }
   #curves button:disabled { cursor: default; }
-  #zoom { display: flex; gap: 0.4rem; flex: none; }
   .icon {
     display: grid;
     place-items: center;
@@ -75,67 +64,81 @@
     color: var(--ink);
     cursor: pointer;
   }
-  .icon:hover { border-color: var(--ink); }
+  @media (hover: hover) { .icon:hover { border-color: var(--ink); } }   /* on a touch screen a tap would leave it on */
   .icon svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-  #error {
-    position: fixed;
-    top: 4.5rem;
-    left: 1rem;
-    right: 1rem;
+  @media (any-pointer: coarse) {   /* a finger needs 44 pixels to aim at, Apple's guideline (touchscreen laptops too) */
+    #curves button, .icon { width: 2.75rem; height: 2.75rem; }
+    #raw { display: grid; place-items: center; min-width: 2.75rem; height: 2.75rem; }
+  }
+  #status, #slow, #error {                  /* hung just below the top row, wherever it ends */
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    left: 0;
+    right: 0;
     max-width: 40rem;
     margin: 0 auto;
-    padding: 0.6rem 1rem;
-    border: 1px solid var(--ink);
     background: var(--paper);
   }
+  #status, #slow { width: fit-content; padding: 0 0.6rem; border-radius: 0.3rem; color: var(--muted); font-size: 1rem; }
+  #error { padding: 0.6rem 1rem; border: 1px solid var(--ink); }
 </style>
 </head>
 <body>
-<main id="stage"></main>
+<main id="stage"><div id="picture"></div></main>
 <header id="top">
-  <a id="back" class="icon" href="index.html" title="Back to the list of Venn diagrams"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8H3M7 4 3 8l4 4"/></svg></a>
-  <h1 id="n"></h1>
-</header>
-<a id="raw" href="">SVG</a>
-<div id="bar">
-  <nav id="curves" aria-label="Curves"></nav>
-  <div id="zoom">
+  <div id="where">
+    <a id="back" class="icon" href="index.html" title="Back to the list of Venn diagrams"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8H3M7 4 3 8l4 4"/></svg></a>
+    <h1 id="n"></h1>
+  </div>
+  <div id="tools">
+    <a id="raw" href="">SVG</a>
     <button id="in" class="icon" type="button" title="Zoom in"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M8 3v10"/></svg></button>
     <button id="out" class="icon" type="button" title="Zoom out"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
     <button id="fit" class="icon" type="button" title="Reset the zoom"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
   </div>
-</div>
-<!-- shown if the drawing can't be loaded; the script fills it in: "Couldn't load <file> (<what went wrong>)" -->
-<p id="error" role="alert" hidden></p>
+  <p id="status" role="status">Loading full image…</p>
+  <p id="slow" role="status" hidden>Apparently Firefox is bad at showing this smoothly while panning/zooming.</p>
+  <!-- shown if the drawing can't be loaded; the script fills it in: "Couldn't load <file> (<what went wrong>)" -->
+  <p id="error" role="alert" hidden></p>
+</header>
+<nav id="curves" aria-label="Curves"></nav>
 <script>
 'use strict'
 // The viewer: view.html?n=N shows img/venn-NN.svg. Drag to pan; zoom with the wheel, a pinch, a double-click, the
 // buttons, or the keys + - 0 (arrows pan). Each curve has a swatch, which shows the curves up to and including its
 // own, so clicking them left to right adds the curves one at a time; the last, or Escape, shows them all. Lines keep
-// the width they have when the drawing fits the window however far it's zoomed in, so close curves come apart.
-// Until the SVG has arrived (17's is 15 MB), the card's PNG stands in for it.
+// the width they have when the drawing fits however far it's zoomed in, so close curves come apart. Until the SVG has
+// arrived, the card's PNG stands in for it.
 const SVGNS = 'http://www.w3.org/2000/svg'
 const PAGE = 51200                     // the side of every drawing's square page, in SVG units (venn.py's PAGE)
-const ZOOM = [1 / 2, 1000]             // how far out and in it zooms, relative to the page just fitting the window
+const ZOOM = [1 / 2, 1000]             // how far out and in it zooms, relative to the page just fitting
 const LINE = 16                        // pixels per line, for wheels that count in lines
+const SETTLE = 150                     // ms the view must keep still before the drawing is drawn anew (see draw())
+const SLOW = 250                       // ms a frame may take while the view moves before the note #slow shows
 const param = new URLSearchParams(location.search).get('n')
 const n = /^[1-9]\d?$/.test(param) ? Number(param) : NaN   // NaN loads nothing, and the error says venn-NaN
 const nn = String(n).padStart(2, '0')
 const file = `img/venn-${nn}.svg`
-const stage = document.getElementById('stage')
+const stage = document.getElementById('stage'), picture = document.getElementById('picture')
 const svg = document.createElementNS(SVGNS, 'svg')
-let view = { cx: PAGE / 2, cy: PAGE / 2, z: 1 }   // the page point at the window's centre, and the zoom
+let view = { cx: PAGE / 2, cy: PAGE / 2, z: 1 }   // the page point at the centre of area() (below), and the zoom
+let drawn = view                       // the view the SVG was last drawn at
+let settle = null                      // the timer that draws it anew once the view keeps still, while one is pending
+let watching = false                   // whether watch() is timing frames, as it does while the view moves
+let lastFrame = null                   // when watch() last ran, or null if not since the drawing was drawn anew
 let stroke = 0                         // the drawing's stroke-width, in SVG units
 
 document.title = `${n} · ${document.title}`
 document.getElementById('n').textContent = n
 document.getElementById('back').href = `index.html#n${n}`
 document.getElementById('raw').href = file
+svg.setAttribute('role', 'img')
+svg.setAttribute('aria-label', `Symmetric Venn diagram with ${n} curves`)
 const thumb = document.createElementNS(SVGNS, 'image')
 for (const [k, v] of Object.entries({ href: `img/venn-${nn}.png`, width: PAGE, height: PAGE })) thumb.setAttribute(k, v)
 thumb.addEventListener('error', () => thumb.remove())   // no PNG either: leave the error alone on the page
 svg.append(thumb)
-stage.append(svg)
+picture.append(svg)
 
 const swatches = Array.from({ length: n }, (_, i) => {
   const b = document.createElement('button')
@@ -154,24 +157,66 @@ function show(k) {
   swatches.forEach((b, j) => b.setAttribute('aria-pressed', String(j <= k)))
 }
 
-// SVG units per CSS pixel
-function scale() { return PAGE / Math.min(stage.clientWidth, stage.clientHeight) / view.z }
+// Where the page goes at zoom 1: the square that fits below the controls along the top and clear of the swatches (a
+// row along the bottom, or, as the CSS puts them in a landscape window, a column along the right edge), centred there;
+// but never less than half the window's shorter side, so that a window too short for the controls still shows the
+// drawing, overlapping them. (x, y) is its centre and side its side, in CSS pixels.
+function area() {
+  const w = stage.clientWidth, h = stage.clientHeight, t = document.getElementById('top').getBoundingClientRect().bottom
+  const c = document.getElementById('curves'), r = c.getBoundingClientRect()
+  const column = getComputedStyle(c).writingMode !== 'horizontal-tb'
+  const right = column ? r.left : w, bottom = column ? h : r.top
+  return { x: right / 2, y: (t + bottom) / 2, side: Math.max(Math.min(right, bottom - t), Math.min(w, h) / 2) }
+}
 
+// SVG units per CSS pixel at zoom z
+const scale = (a, z) => PAGE / a.side / z
+
+// Show the current view. Drawing 19 anew takes a tenth of a second to half a second, too slow to follow a drag, so
+// this only moves and scales the picture last drawn, with a CSS transform on the div holding the SVG, which browsers
+// do cheaply (Chromium and WebKit 17 to 44 ms a frame for 19; Firefox only when it is translated, not scaled, and only
+// a div's transform, not an SVG's own); its lines thicken or thin meanwhile. Once the view has kept still for SETTLE
+// ms, redraw() draws it anew, sharp.
 function draw() {
-  const w = stage.clientWidth, h = stage.clientHeight, s = scale()
-  svg.setAttribute('viewBox', `${view.cx - w * s / 2} ${view.cy - h * s / 2} ${w * s} ${h * s}`)
-  svg.style.setProperty('--stroke', `${stroke * Math.min(w, h) / PAGE}px`)
+  const a = area(), s = scale(a, view.z), k = scale(a, drawn.z) / s
+  picture.style.transform = `translate(${a.x * (1 - k) + (drawn.cx - view.cx) / s}px, ${a.y * (1 - k) + (drawn.cy - view.cy) / s}px) scale(${k})`
+  clearTimeout(settle)
+  settle = setTimeout(redraw, SETTLE)
+  if (!watching) {
+    watching = true
+    requestAnimationFrame(watch)
+  }
+}
+
+// While the view moves, time each frame. One slower than SLOW ms (Firefox, scaling 19's picture, takes about 300)
+// shows the note #slow, saying the drawing sharpens when the view keeps still; redraw() hides it again.
+function watch(t) {
+  if (lastFrame !== null && t - lastFrame > SLOW) document.getElementById('slow').hidden = false
+  watching = settle !== null
+  lastFrame = watching ? t : null
+  if (watching) requestAnimationFrame(watch)
+}
+
+function redraw() {
+  clearTimeout(settle)
+  settle = lastFrame = null
+  document.getElementById('slow').hidden = true
+  const a = area(), s = scale(a, view.z)
+  svg.setAttribute('viewBox', `${view.cx - a.x * s} ${view.cy - a.y * s} ${stage.clientWidth * s} ${stage.clientHeight * s}`)
+  svg.style.setProperty('--stroke', `${stroke * a.side / PAGE}px`)
+  picture.style.transform = 'translate(0px, 0px) scale(1)'   // the identity: from none, WebKit's next gesture stalls
+  drawn = view
 }
 
 // Zoom by f about the window point (x, y), which goes on showing the same point of the drawing
 function zoom(x, y, f) {
-  const s = scale(), z = Math.min(Math.max(view.z * f, ZOOM[0]), ZOOM[1]), t = s * view.z / z
-  view = { cx: view.cx + (x - stage.clientWidth / 2) * (s - t), cy: view.cy + (y - stage.clientHeight / 2) * (s - t), z }
+  const a = area(), z = Math.min(Math.max(view.z * f, ZOOM[0]), ZOOM[1]), d = scale(a, view.z) - scale(a, z)
+  view = { cx: view.cx + (x - a.x) * d, cy: view.cy + (y - a.y) * d, z }
   draw()
 }
 
 function pan(dx, dy) {
-  const s = scale()
+  const s = scale(area(), view.z)
   view = { ...view, cx: view.cx - dx * s, cy: view.cy - dy * s }
   draw()
 }
@@ -181,8 +226,8 @@ function fit() {
   draw()
 }
 
-const centre = f => zoom(stage.clientWidth / 2, stage.clientHeight / 2, f)
-const step = () => Math.min(stage.clientWidth, stage.clientHeight) / 10
+const centre = f => zoom(area().x, area().y, f)
+const step = () => area().side / 10
 
 // Pointers (mouse, pen, fingers) pressed on the drawing: one pans; two or more also zoom, by how far they spread
 const held = new Map()                 // pointerId -> [x, y]
@@ -244,31 +289,56 @@ addEventListener('keydown', e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return   // the browser's own shortcuts, like cmd+0
   KEYS[e.key]?.()
 })
-addEventListener('resize', draw)
+addEventListener('resize', redraw)   // the picture last drawn was for the old window
 
+// The file holds curve 0 once and draws curve i as a <use> of it rotated about the page centre (venn.py's compact()):
+// 1/n of the bytes to download. Each curve becomes a path of its own here, its points rotated: Firefox drew 19's
+// rotated uses about 1.5 times slower than these paths (other browsers drew them about as fast), and the quals see
+// one path per curve.
+function curves(text) {
+  const src = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement
+  const curve = src.querySelector('path'), uses = [...src.querySelectorAll('use')]
+  const d = curve.getAttribute('d'), xy = d.match(/-?\d+(?:\.\d+)?/g).map(Number)
+  const got = [src.getAttribute('viewBox'), src.querySelectorAll('path').length, [...new Set(d.match(/[A-Za-z]/g))].join(''),
+               (xy.length / 2 - 1) % 3, uses.length, ...uses.map(u => `${u.id} ${u.getAttribute('href')}`)]
+  const want = [`0 0 ${PAGE} ${PAGE}`, 1, 'MCZ', 0, n, ...uses.map((_, i) => `curve-${i} #curve`)]
+  if (String(got) !== String(want)) throw new Error(`${got} ≠ ${want}`)   // viewBox, paths, commands, spans, uses
+  return uses.map(u => {
+    const [deg, cx, cy] = u.getAttribute('transform').match(/^rotate\(([-\d.e]+) ([\d.]+) ([\d.]+)\)$/).slice(1).map(Number)
+    const c = Math.cos(deg * Math.PI / 180), s = Math.sin(deg * Math.PI / 180), pts = []
+    for (let i = 0; i < xy.length; i += 2) {
+      const x = xy[i] - cx, y = xy[i + 1] - cy
+      pts.push(`${(cx + x * c - y * s).toFixed(3)},${(cy + x * s + y * c).toFixed(3)}`)
+    }
+    const spans = []
+    for (let i = 1; i < pts.length; i += 3) spans.push(`C${pts[i]} ${pts[i + 1]} ${pts[i + 2]}`)
+    const p = document.createElementNS(SVGNS, 'path')
+    for (const k of ['id', 'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin']) p.setAttribute(k, u.getAttribute(k))
+    p.setAttribute('d', `M${pts[0]} ${spans.join(' ')} Z`)
+    return p
+  })
+}
+
+const status = document.getElementById('status')
 fetch(file)
   .then(r => r.ok ? r.text() : Promise.reject(new Error(r.status)))   // just the status: HTTP/2 has no status text
   .then(text => {
-    const src = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement
-    const paths = [...src.querySelectorAll('path')]
-    const got = [src.getAttribute('viewBox'), paths.length, ...paths.map(p => p.id)]
-    const want = [`0 0 ${PAGE} ${PAGE}`, n, ...paths.map((_, i) => `curve-${i}`)]
-    if (String(got) !== String(want)) throw new Error(`${got} ≠ ${want}`)   // viewBox, curve count, ids
+    const paths = curves(text)
     stroke = Number(paths[0].getAttribute('stroke-width'))
-    svg.replaceChildren(...paths.map(p => document.importNode(p, true)))
-    const colours = paths.map(p => p.getAttribute('stroke'))
+    svg.replaceChildren(...paths)
     swatches.forEach((b, i) => {
-      b.style.setProperty('--colour', colours[i])
+      b.style.setProperty('--colour', paths[i].getAttribute('stroke'))
       b.disabled = false
     })
-    draw()
+    redraw()
   })
   .catch(e => {
     const error = document.getElementById('error')
     error.textContent = `Couldn't load ${file} (${e.message})`
     error.hidden = false
   })
-draw()
+  .finally(() => { status.hidden = true })
+redraw()
 </script>
 </body>
 </html>

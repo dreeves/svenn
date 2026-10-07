@@ -127,11 +127,12 @@ def certs():
         cert_path(n).write_bytes(data)
 
 
-# Drawing. Every drawing is an SVG with one closed path of cubic Beziers per curve, id curve-i for the
-# curve of bit i, rendered to a PNG_PX-wide PNG with lines about 18/n pixels wide. The plotter writes
-# coordinates to three decimals, and bundles of nearly parallel curves at n = 17 sit closer together
-# than a thousandth of a 500-unit disk, so the disk is 50000 units across (page 51200 with margins).
-# The SVG's width and height attributes are then dropped so a browser fits it to the window.
+# Drawing. Each drawer writes an SVG with one closed path of cubic Beziers per curve, id curve-i for the
+# curve of bit i; compact() then rewrites it as curve 0 plus rotations of it (see there), with no width and
+# height, so a browser fits it to the window, and it is rendered to a PNG_PX-wide PNG with lines about 18/n
+# pixels wide. Coordinates have three decimals (DECIMALS for the plotter's), and bundles of nearly parallel
+# curves at n = 17 sit closer together than a thousandth of a 500-unit disk, so the disk is 50000 units
+# across (page 51200 with margins).
 #
 # Two ways to draw, picked by DRAWER below (the one branch in this file): the n = 2, 3 and 5 diagrams
 # are drawn as their classic congruent circles and ellipses; every other n goes through Dzoba's plotter
@@ -143,7 +144,7 @@ PNG_PX = 1600
 # unchanged from github.com/dzoba/venn17 at commit e89d6f6f8cf17294c5b32e0406088684557fbde4 (MIT, see LICENSE).
 sys.path.insert(0, str(HERE / 'vendor' / 'venn17'))
 import plotter_svg  # noqa: E402
-from geom import intersections, sample  # noqa: E402
+from geom import intersections, nets, rotate, sample  # noqa: E402
 
 
 def stroke(n): return 18.0 / n * PAGE / PNG_PX
@@ -242,9 +243,10 @@ def plotter_layout(n):
 def smooth(n, svg, knots, kvid, orb):
     tens = np.full(len(orb), TENSION)
     for attempt in range(8):
-        # rounded to the SVG's three decimals, so the check sees exactly what the file will hold
-        ctrl = [np.round(plotter_svg.bezier_controls(k, np.where(v >= 0, tens[np.maximum(v, 0)], TENSION), CAP)[0], 3)
-                for k, v in zip(knots, kvid)]
+        # as compact() will store them, so the check sees exactly what the file will hold: curve 0 rounded to DECIMALS
+        # places, and each other curve that, rotated
+        ctrl = stored([plotter_svg.bezier_controls(k, np.where(v >= 0, tens[np.maximum(v, 0)], TENSION), CAP)[0]
+                       for k, v in zip(knots, kvid)])
         bad = smoothing_offenders(ctrl, kvid)
         print(f'n={n} smoothing attempt {attempt}: {len(bad)} crossings bound arcs that cross', file=sys.stderr)
         if len(bad) == 0:
@@ -252,7 +254,7 @@ def smooth(n, svg, knots, kvid, orb):
         hot = np.isin(orb, orb[bad])
         tens[hot] = tens[hot] * 0.35 * (attempt < 2)   # cut to 35%, and from the third try on to 0
     assert len(bad) == 0, 'smoothing still crosses after eight attempts'
-    fmt = plotter_svg.fmt
+    fmt = lambda x: f'{x:.{DECIMALS}f}'.rstrip('0').rstrip('.')
     paths = [' '.join([f'M{fmt(c[0, 0, 0])},{fmt(c[0, 0, 1])}']
                       + [f'C{fmt(x1)},{fmt(y1)} {fmt(x2)},{fmt(y2)} {fmt(x3)},{fmt(y3)}'
                          for (x1, y1), (x2, y2), (x3, y3) in c[:, 1:].tolist()] + ['Z'])
@@ -309,11 +311,64 @@ DRAWER = {n: (draw_conics if n in CONICS else draw_plotter) for n in DRAWN}
 def draw(n):
     svg = HERE / 'img' / f'venn-{n:02d}.svg'
     DRAWER[n](n, svg)
-    head = f'width="{plotter_svg.fmt(PAGE)}mm" height="{plotter_svg.fmt(PAGE)}mm" '
-    text = svg.read_text()
-    assert text.count(head) == 1, 'unexpected SVG header'
-    svg.write_text(text.replace(head, ''))
+    compact(svg)
     svg2png(svg, svg.with_suffix('.png'), PNG_PX)
+
+
+# A drawing's SVG holds curve 0 once, as <defs><path id="curve">, and draws curve i as <use id="curve-i"> of it rotated
+# about the page centre by a multiple of 360/n degrees. Both drawers make every curve a rotation of curve 0 (to within
+# the rounding of their coordinates), so this is the same drawing in 1/n of the bytes (62 MB down to 4.3 at n = 19), and
+# exactly symmetric; compact() asserts as much before it drops curves 1 to n - 1. The SVG has no width and height, so
+# that a browser opening it fits it to the window.
+ROUNDING = 0.002   # the most a coordinate can differ between two control points each rounded to three decimals
+# The places the plotter's drawings give coordinates to. Three were too few once curves 1 to n - 1 became rotations of
+# rounded curve 0: rotating it moves a point up to 0.0014 from where rounding that curve itself would, and at n = 19
+# straight arcs of different curves pass closer than that, so that 20 crossings stayed wrong however far smoothing was
+# cut back (the drawing made before compact() existed, each curve rounded on its own, missed them by luck).
+DECIMALS = 6
+
+
+def compact(svg):
+    """Rewrite the SVG of n paths that a drawer wrote as curve 0 plus n rotated <use>s of it, after asserting that each
+    curve i is, control point for control point, curve 0 rotated by 360 k / n degrees, each k from 0 to n - 1 once."""
+    text = svg.read_text()
+    page = float(re.search(r'viewBox="0 0 ([\d.]+) [\d.]+"', text).group(1))
+    curves = re.findall(r'<path id="curve-(\d+)" (fill="none" stroke="[^"]+" stroke-width="[^"]+" '
+                        r'stroke-linecap="round" stroke-linejoin="round") d="([^"]+)"/>', text)
+    n = len(curves)
+    assert [int(i) for i, _, _ in curves] == list(range(n)) and text.count('<path') == n, 'unexpected SVG'
+    full = [nets(d) for _, _, d in curves]
+    turned = [rotate(full[0], page, 360 * k / n) for k in range(n)]
+    multiples = [min(range(n), key=lambda k: matched(turned[k], f)[1]) for f in full]   # curve i is curve 0 turned by k/n
+    worst = max(matched(turned[k], f)[1] for k, f in zip(multiples, full))
+    assert sorted(multiples) == list(range(n)) and worst <= ROUNDING, f'curves are not rotations of curve 0: {multiples}, {worst}'
+    fmt, c = plotter_svg.fmt, plotter_svg.fmt(page / 2)
+    uses = ''.join(f'<use id="curve-{i}" href="#curve" {style} transform="rotate({360 * k / n:.12g} {c} {c})"/>\n'
+                   for (i, style, _), k in zip(curves, multiples))
+    svg.write_text(f'<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+                   f'viewBox="0 0 {fmt(page)} {fmt(page)}">\n<defs><path id="curve" d="{curves[0][2]}"/></defs>\n'
+                   f'{uses}</svg>\n')
+
+
+def matched(a, b):
+    """Control nets a with their spans put in the order of nets b's (from any start, in either direction), and the most
+    any coordinate then differs between the two; (None, inf) if they have different numbers of spans. They are lined
+    up on the first inner control point of b's first span, which belongs to that curve alone (span ends are crossings,
+    which two curves share)."""
+    tries = [np.roll(g, -int(np.argmin(np.linalg.norm(g[:, 1] - b[0, 1], axis=1))), axis=0)
+             for g in (a, a[::-1, ::-1]) if len(g) == len(b)]
+    return min(((g, float(np.abs(g - b).max())) for g in tries), key=lambda x: x[1], default=(None, np.inf))
+
+
+def stored(curves):
+    """The curves (control nets, in page units) as compact() stores them: curve 0 rounded to DECIMALS places, and each
+    other curve that rotated by the multiple of 360/n degrees nearest it (asserted to be within the rounding), its
+    spans in the curve's own order."""
+    n = len(curves)
+    turned = [rotate(np.round(curves[0], DECIMALS), PAGE, 360 * k / n) for k in range(n)]
+    out = [min((matched(g, c) for g in turned), key=lambda x: x[1]) for c in curves]
+    assert max(gap for _, gap in out) <= ROUNDING, 'curves are not rotations of curve 0'
+    return [g for g, _ in out]
 
 
 def svg2png(svg, png, px):
@@ -392,8 +447,11 @@ def preview():
         text = (HERE / 'img' / f'venn-{n:02d}.svg').read_text()
         assert f'viewBox="0 0 {plotter_svg.fmt(PAGE)} {plotter_svg.fmt(PAGE)}"' in text, f'venn-{n:02d}.svg'
         body, count = re.subn(r'stroke-width="[\d.]+"', f'stroke-width="{PREVIEW_STROKE / n * PAGE / PREVIEW_CELL:.1f}"',
-                              text[text.index('<path'):text.rindex('</svg>')])
+                              text[text.index('<defs>'):text.rindex('</svg>')])
         assert count == n, (n, count)
+        # the six drawings each define a path with id "curve": give each its own id, so each draws its own curve
+        assert body.count('id="curve"') == 1 and body.count('href="#curve"') == n, n
+        body = body.replace('id="curve"', f'id="curve{n}"').replace('href="#curve"', f'href="#curve{n}"')
         x, y = x0 + k % cols * (PREVIEW_CELL + PREVIEW_GAP), y0 + k // cols * (PREVIEW_CELL + PREVIEW_GAP)
         parts.append(f'<svg x="{x:g}" y="{y:g}" width="{PREVIEW_CELL}" height="{PREVIEW_CELL}" '
                      f'viewBox="0 0 {plotter_svg.fmt(PAGE)} {plotter_svg.fmt(PAGE)}">\n{body}</svg>\n')

@@ -1,0 +1,15 @@
+/* What index.html and view.html share: the colours, the font and the base rules */
+:root {
+  --paper: #ffffff;
+  --ink: #1d2433;
+  --muted: #5c6577;
+  --line: #e2e5ea;
+}
+* { box-sizing: border-box; }
+html { background: var(--paper); color: var(--ink); }
+body {
+  margin: 0;
+  font: 400 1.15rem/1.6 "EB Garamond", Garamond, Georgia, serif;
+  font-variant-numeric: oldstyle-nums;
+}
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }

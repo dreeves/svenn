@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 51200 51200">
-<path id="curve-0" fill="none" stroke="#df202e" stroke-width="288.0" stroke-linecap="round" stroke-linejoin="round" d="M2139.663,25600 C2139.663,34237.858 9142.03,41240.225 17779.888,41240.225 C26417.745,41240.225 33420.112,34237.858 33420.112,25600 C33420.112,16962.142 26417.745,9959.775 17779.888,9959.775 C9142.03,9959.775 2139.663,16962.142 2139.663,25600 Z"/>
-<path id="curve-1" fill="none" stroke="#008b96" stroke-width="288.0" stroke-linecap="round" stroke-linejoin="round" d="M49060.337,25600 C49060.337,16962.142 42057.97,9959.775 33420.112,9959.775 C24782.255,9959.775 17779.888,16962.142 17779.888,25600 C17779.888,34237.858 24782.255,41240.225 33420.112,41240.225 C42057.97,41240.225 49060.337,34237.858 49060.337,25600 Z"/>
+<defs><path id="curve" d="M2139.663,25600 C2139.663,34237.858 9142.03,41240.225 17779.888,41240.225 C26417.745,41240.225 33420.112,34237.858 33420.112,25600 C33420.112,16962.142 26417.745,9959.775 17779.888,9959.775 C9142.03,9959.775 2139.663,16962.142 2139.663,25600 Z"/></defs>
+<use id="curve-0" href="#curve" fill="none" stroke="#df202e" stroke-width="288.0" stroke-linecap="round" stroke-linejoin="round" transform="rotate(0 25600 25600)"/>
+<use id="curve-1" href="#curve" fill="none" stroke="#008b96" stroke-width="288.0" stroke-linecap="round" stroke-linejoin="round" transform="rotate(180 25600 25600)"/>
 </svg>

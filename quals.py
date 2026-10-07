@@ -32,6 +32,7 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
 
@@ -40,7 +41,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 
-from geom import candidate_pairs, intersections, sample
+from geom import candidate_pairs, intersections, nets, rotate, sample
 
 HERE = Path(__file__).resolve().parent
 NS = (2, 3, 5, 7, 11, 13, 17, 19, 23)  # every prime up to the largest n with a known diagram
@@ -180,18 +181,16 @@ def single_rotation_cycles(O, N):
 
 # ------------------------------------------------------------------ drawing checking
 def read_svg(path):
-    """Return (curves, page) where curves[i] is the (k x 4 x 2) array of cubic Bezier control nets of the
-    path with id curve-i."""
+    """Return (curves, page, degrees) where curves[i] is the (k x 4 x 2) array of cubic Bezier control nets that the SVG
+    draws as <use id="curve-i">: its one path, <path id="curve">, rotated by degrees[i] about the page centre."""
     t = path.read_text()
     page = float(re.search(r'viewBox="0 0 ([\d.]+) [\d.]+"', t).group(1))
-    curves = {}
-    for m in re.finditer(r'<path id="curve-(\d+)"[^>]* d="([^"]+)"', t):
-        nums = np.array(re.findall(r'-?\d+(?:\.\d+)?', m.group(2)), float).reshape(-1, 2)
-        assert m.group(2).startswith('M') and m.group(2).rstrip().endswith('Z')
-        start, rest = nums[0], nums[1:].reshape(-1, 3, 2)
-        p0 = np.vstack([start, rest[:-1, 2]])
-        curves[int(m.group(1))] = np.concatenate([p0[:, None], rest], 1)
-    return [curves[i] for i in range(len(curves))], page
+    base = nets(re.search(r'<path id="curve" d="([^"]+)"/>', t).group(1))
+    uses = re.findall(r'<use id="curve-(\d+)" href="#curve" [^>]*transform="rotate\(([-\d.e]+) ([\d.]+) ([\d.]+)\)"/>', t)
+    assert [int(i) for i, _, _, _ in uses] == list(range(len(uses))), 'curve ids out of order'
+    assert {(float(x), float(y)) for _, _, x, y in uses} == {(page / 2, page / 2)}, 'rotations not about the page centre'
+    degrees = [float(a) for _, a, _, _ in uses]
+    return [rotate(base, page, a) for a in degrees], page, degrees
 
 
 def inside(points, polys):
@@ -344,7 +343,7 @@ def qual_svg_matches_cert():
     through a crossing agree on its four region labels, and the crossings are exactly the cert's faces."""
     bad = []
     for n in DRAWN:
-        nets, page = read_svg(svg_path(n))
+        nets, page, _ = read_svg(svg_path(n))
         assert len(nets) == n, (len(nets), n)
         lens = np.concatenate([np.linalg.norm(c[:, 3] - c[:, 0], axis=1) for c in nets])
         polys = [sample(c, float(np.median(lens)) / 6)[0] for c in nets]
@@ -369,28 +368,37 @@ def qual_svg_matches_cert():
 
 @qual
 def qual_svg_symmetric():
-    """Replicata: rotate each curve of img/venn-NN.svg by 2 pi / n about the page centre.
-    Expectata: it lands on another curve of the same drawing, the same shift for every curve,
-    to within half the sampling step (a twentieth of the median span's chord) plus 0.002 for the
-    SVG's rounding to three decimals."""
+    """Replicata: read img/venn-NN.svg for each drawn n. Expectata: it is symmetric by construction, exactly the tree
+    venn.py's compact() writes: an <svg> with only a version and a viewBox, holding <defs> with one path, <path
+    id="curve" d="...">, and then the n curves, <use id="curve-i" href="#curve">, each with just its stroke (fill none,
+    a colour, a width, round caps and joins) and a transform rotating that path about the page centre by a multiple of
+    360/n degrees, each multiple from 0 to n - 1 once (to within 1e-9 of a multiple). Nothing else, no other attribute
+    or element, so nothing can be drawn but those n rotations. (compact() asserts, before it keeps only curve 0, that
+    every curve the drawer made was such a rotation, to within the rounding of its coordinates; qual_svg_matches_cert
+    checks the result against the cert.)"""
+    svg, style = '{http://www.w3.org/2000/svg}', {'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin'}
     bad = []
     for n in DRAWN:
-        nets, page = read_svg(svg_path(n))
-        lens = np.concatenate([np.linalg.norm(c[:, 3] - c[:, 0], axis=1) for c in nets])
-        step = float(np.median(lens)) / 10
-        polys = [sample(c, step)[0] for c in nets]
-        trees = [cKDTree(p) for p in polys]
-        w = np.exp(2j * np.pi / n)
-        rotated = []
-        for p in polys:
-            z = ((p[:, 0] - page / 2) + 1j * (p[:, 1] - page / 2)) * w
-            rotated.append(np.stack([z.real + page / 2, z.imag + page / 2], 1))
-        # the curve that curve 0 lands on fixes the shift; every curve must land on its shifted partner
-        shift = int(np.argmin([t.query(rotated[0][:50])[0].max() for t in trees]))
-        worst = max(float(trees[(i + shift) % n].query(q)[0].max()) for i, q in enumerate(rotated))
-        # a point of a curve is within half a sample spacing of a sample, and spacings average at most `step`
-        if shift == 0 or worst > step / 2 + 0.002:
-            bad.append(f'n={n}: shift {shift}, worst deviation {worst:.4g} (step {step:.4g}, in SVG units)')
+        root = ET.parse(svg_path(n)).getroot()
+        kids = list(root)
+        tags = [k.tag.removeprefix(svg) for k in kids]
+        if root.tag != svg + 'svg' or set(root.attrib) != {'version', 'viewBox'} or tags != ['defs'] + ['use'] * n:
+            bad.append(f'n={n}: <{root.tag}> with {sorted(root.attrib)} holding {tags}')
+            continue
+        defs = list(kids[0])
+        if [d.tag for d in defs] != [svg + 'path'] or set(defs[0].attrib) != {'id', 'd'} or defs[0].get('id') != 'curve' \
+                or len(defs[0]):
+            bad.append(f'n={n}: <defs> holds {[(d.tag, d.attrib.get("id")) for d in defs]}, not just <path id="curve" d>')
+        for i, use in enumerate(kids[1:]):
+            want = (f'curve-{i}', '#curve', 'none', 'round', 'round', {'id', 'href', 'transform'} | style, 0)
+            got = (use.get('id'), use.get('href'), use.get('fill'), use.get('stroke-linecap'), use.get('stroke-linejoin'),
+                   set(use.attrib), len(use))
+            if got != want:
+                bad.append(f'n={n}: use {i} has id, href, fill, caps, joins, attributes, children {got}')
+        _, _, degrees = read_svg(svg_path(n))
+        multiples = sorted(a * n / 360 for a in degrees)
+        if not np.allclose(multiples, range(n), rtol=0, atol=1e-9):
+            bad.append(f'n={n}: curves turned by {degrees} degrees, not each multiple of 360/{n} once')
     return bad
 
 
@@ -601,9 +609,13 @@ def qual_viewer_linked():
 @qual
 def qual_viewer_fit():
     """Replicata: open view.html?n=N for every n it shows, in Chromium, WebKit and Firefox, in a 1200 by 800 window.
-    Expectata: for each n, the drawing's square page fits the window's shorter side, centred; each curve's line is as
-    wide on screen as the SVG's own stroke-width makes it at that size, and doesn't scale (vector-effect:
-    non-scaling-stroke), so lines keep that width when zoomed in and bundles of nearly parallel curves come apart."""
+    Expectata: for each n, the drawing's square page fits the space below the controls along the top and clear of
+    the swatches, which stand in a row along the bottom or, in a landscape window like this one, in a column along the
+    right edge; it is centred in that space, so no control covers it; each curve is a
+    path of its own, path i the file's one path turned as its use i says (every coordinate within 0.001) in use i's
+    colour, whose line is as wide on screen as the SVG's own stroke-width makes it at that size, and doesn't scale
+    (vector-effect: non-scaling-stroke), so lines keep that width when zoomed in and bundles of nearly parallel curves
+    come apart."""
     return browser('fit')
 
 
@@ -611,7 +623,7 @@ def qual_viewer_fit():
 def qual_viewer_curves():
     """Replicata: open view.html?n=7; click the first swatch, then the third, then the third again, then the
     seventh; click the second and press Escape. Expectata: one swatch per curve, in its curve's colour. Each swatch
-    shows the curves up to and including its own, so that clicking them left to right adds the curves one at a time:
+    shows the curves up to and including its own, so that clicking them in order adds the curves one at a time:
     the first shows curve 0 alone (counting from 0, as the SVG's ids curve-0 to curve-6 do), the third curves 0 to 2,
     clicking it again changes nothing, and the seventh, like Escape, shows all seven, as on opening. Exactly the
     swatches of the curves shown are pressed (aria-pressed) and in their curves' colours; the others are faded by their
@@ -631,9 +643,11 @@ def qual_viewer_wheel():
 
 @qual
 def qual_viewer_drag():
-    """Replicata: in view.html?n=7, drag the drawing 120 pixels right and 80 down; point at a curve. Expectata: the
-    point grabbed moves with the pointer, ending under it; the scale doesn't change. The curves never take the
-    pointer: it reaches the stage beneath them, since hit-testing 17's or 19's strokes on every move takes seconds."""
+    """Replicata: in view.html?n=7, drag the drawing 120 pixels right and 80 down; point at a curve; drag from the
+    middle of the top bar and from the first end of the swatches, beside them. Expectata: the point grabbed
+    moves with the pointer, ending under it, each time; the scale doesn't change. The curves never take the pointer:
+    it reaches the stage beneath them, since hit-testing 17's or 19's strokes on every move takes seconds; nor do the
+    bars, between their controls."""
     return browser('drag')
 
 
@@ -662,12 +676,42 @@ def qual_viewer_controls():
 
 
 @qual
+def qual_viewer_cancel():
+    """Replicata: in view.html?n=7, turn the wheel over the drawing, over + with ctrl held (a trackpad pinch), and over
+    the swatches; send gesturestart and gesturechange (Safari's trackpad pinch) over +. Expectata: the viewer cancels
+    each of them (preventDefault), which keeps the browser from zooming or scrolling the page itself."""
+    return browser('cancel')
+
+
+@qual
 def qual_viewer_gesture():
     """Replicata: in Safari (WebKit), pinch on a trackpad over view.html?n=7 to twice the size, which Safari reports
-    as gesturestart and gesturechange events carrying the scale so far; then pinch on a touchscreen, which Safari
-    reports as touch pointers and gesture events both. Expectata: the trackpad pinch zooms in by 2 about the spot
-    pinched; the touchscreen's gesture events add nothing to what its pointers do."""
+    as gesturestart and gesturechange events carrying the scale so far from 1; pinch again to twice the size; then
+    pinch on a touchscreen, which Safari reports as touch pointers and gesture events both. Expectata: each trackpad
+    pinch zooms in by 2 about the spot pinched (4 in all); the touchscreen's gesture events add nothing to what its
+    pointers do."""
     return browser('gesture')
+
+
+@qual
+def qual_viewer_settle():
+    """Replicata: open the viewer for the largest n (drawing 19 anew takes a tenth to half a second); drag the drawing
+    as a hand does, a move every 16 ms, then turn the wheel and pinch the same way, then stop. Expectata: meanwhile it
+    moves without being drawn anew: the SVG keeps its viewBox and a CSS transform on the picture already drawn (the
+    div #picture, which has will-change: transform) moves it, which browsers do cheaply. Within 2 seconds of the last
+    event it is drawn anew at the new view, sharp again, where the moved picture showed it (each point within half a
+    pixel, the same scale) with lines as wide as at fit, and the picture's transform back to the identity. (The
+    identity, not none: from none, WebKit's next gesture began with a 115-140 ms frame at n = 19.)"""
+    return browser('settle')
+
+
+@qual
+def qual_viewer_slow():
+    """Replicata: in view.html?n=7, drag the drawing, a move a frame; then let one frame take 400 ms (as moving 19's
+    picture does in Firefox when it scales), then let go. Expectata: no note during the quick frames; after the slow
+    one, a note saying that moving is slow here and the drawing sharpens when the view keeps still; the note gone once
+    the drawing has been drawn anew."""
+    return browser('slow')
 
 
 @qual
@@ -679,7 +723,8 @@ def qual_viewer_dblclick():
 @qual
 def qual_viewer_buttons():
     """Replicata: in view.html?n=7, click +, then − twice; drag; click the fit button. Expectata: + zooms in by 2
-    and − out by 2, about the window's centre; fit puts the drawing back as it was on opening."""
+    and − out by 2, about the centre of the space the drawing fits on opening (between the controls along the top and
+    the swatches); fit puts the drawing back as it was on opening."""
     return browser('buttons')
 
 
@@ -687,9 +732,9 @@ def qual_viewer_buttons():
 def qual_viewer_keys():
     """Replicata: in view.html?n=7, press +, then ctrl+0 and cmd+0, then - twice, then 0, then =, then alt+0, then
     0 and the four arrows. Expectata: + (or =, the same key without shift) and - zoom in and out by 2 about the
-    window's centre; 0 fits the drawing as on opening; ctrl+0, cmd+0 and alt+0, the browser's own keys, do nothing to
-    the drawing; each arrow pans a tenth of the window's shorter side its way, so the point that was that far from
-    the centre in its direction is now at the centre."""
+    centre of the space the drawing fits on opening; 0 fits the drawing as on opening; ctrl+0, cmd+0 and alt+0, the
+    browser's own keys, do nothing to the drawing; each arrow pans a tenth of the side of the drawing as it fits on
+    opening its way, so the point that was that far from the centre in its direction is now at the centre."""
     return browser('keys')
 
 
@@ -697,31 +742,33 @@ def qual_viewer_keys():
 def qual_viewer_limits():
     """Replicata: in view.html?n=7, in a 1200 by 800 window, click − six times; then turn the wheel far up.
     Expectata: zooming out stops at half the size that fits the window, and zooming in stops at 1000 times it (where a
-    pixel is 0.064 units of the SVG's 51200-unit page, still coarser than the 0.001 the SVG gives coordinates to)."""
+    pixel is about 0.07 units of the SVG's 51200-unit page, still coarser than the 0.001 the SVG gives coordinates to)."""
     return browser('limits')
 
 
 @qual
 def qual_viewer_resize():
     """Replicata: in view.html?n=7 in a 1200 by 800 window, click +, then make the window 800 by 600. Expectata: the
-    point at the window's centre stays at its centre and the drawing keeps its size relative to the window's shorter
-    side (twice the size that fits)."""
+    point at the centre of the space the drawing fits stays at that space's centre, and the drawing keeps its size
+    relative to that space (twice the size that fits). Then make it 1200 by 100, too short for the controls: the drawing
+    still shows, at least half the window's shorter side across (overlapping the controls), never vanishing."""
     return browser('resize')
 
 
 @qual
 def qual_viewer_links():
     """Replicata: open view.html?n=7. Expectata: its title is "7 · " then the list's title; the back arrow links to
-    index.html#n7, the card on the list; and the SVG link to img/venn-07.svg, the bare file."""
+    index.html#n7, the card on the list; the SVG link to img/venn-07.svg, the bare file; and the drawing is an image
+    to a screen reader (role img) with a label that says n."""
     return browser('links')
 
 
 @qual
 def qual_viewer_loading():
     """Replicata: open view.html?n=7 while img/venn-07.svg is slow to arrive, and click +. Expectata: meanwhile the
-    viewer shows img/venn-07.png, the card's picture, placed as the drawing would be (fitting the window's shorter
-    side, centred) and zoomed by + as it would be, and seven swatches, all disabled; once the SVG arrives, its seven
-    curves replace the picture and the swatches work."""
+    viewer shows img/venn-07.png, the card's picture, placed as the drawing would be and zoomed by + as it would be,
+    a line saying that the full drawing is on its way (visible, as Playwright judges it), and seven swatches, all
+    disabled; once the SVG arrives, its seven curves replace the picture, the line goes, and the swatches work."""
     return browser('loading')
 
 
@@ -730,17 +777,33 @@ def qual_viewer_error():
     """Replicata: open view.html?n=4, for which there is no drawing; then view.html?n=abc, view.html?n= and
     view.html?n=10000000. Expectata: for n=4, a visible error saying that img/venn-04.svg could not be loaded, ending
     with the server's status in brackets, "(404)" (status text alone would be empty over HTTP/2, as GitHub Pages
-    serves it), four swatches, all disabled, and no broken picture in the drawing area; for the others, an error
-    within 3 seconds and no swatches."""
+    serves it), four swatches, all disabled, no loading line and no broken picture in the drawing area; for the
+    others, an error within 3 seconds and no swatches."""
     return browser('error')
 
 
 @qual
 def qual_viewer_phone():
-    """Replicata: open view.html?n=17 on a phone, a 375 by 667 window. Expectata: the controls (the back arrow and
-    number, the SVG link, the 17 swatches and the zoom buttons) all fit in the window without overlapping each other,
-    and the page doesn't scroll."""
+    """Replicata: open the viewer for the largest n on phones with touch screens, 375 by 667, 320 by 568, and 844 by
+    390 (one on its side); tap +.
+    Expectata: the controls (the back arrow and number; the SVG link and zoom buttons; the swatches) all fit in the
+    window without overlapping each other, the page doesn't scroll, and every button and link is at least 44 by 44
+    pixels, Apple's guideline for something to touch. After the tap, + looks as it did before it (no hover look stays
+    behind, as it does on touch screens unless hover styles are kept to devices that can hover). On the phone on its
+    side the swatches stand in a column along the right edge and the drawing fits in at least 300 pixels."""
     return browser('phone')
+
+
+@qual
+def qual_shared_style():
+    """Replicata: read index.html and view.html. Expectata: both link site.css, which holds what they share (the
+    colours, the font, the base rules), and neither defines any of site.css's colours itself."""
+    tokens = re.findall(r'--([\w-]+):', (HERE / 'site.css').read_text())
+    bad = [f'{name} does not link site.css' for name in PAGES
+           if not any(t == 'link' and a.get('rel') == 'stylesheet' and a.get('href') == 'site.css'
+                      for t, a in parse_page(name).tags)]
+    return bad + [f'{name} defines --{token} itself' for name in PAGES for token in tokens
+                  if f'--{token}:' in (HERE / name).read_text()] + ([] if tokens else ['site.css defines no colours'])
 
 
 @qual
