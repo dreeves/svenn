@@ -105,8 +105,7 @@
     <button id="in" class="icon" type="button" title="Zoom in"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M8 3v10"/></svg></button>
     <button id="out" class="icon" type="button" title="Zoom out"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
     <button id="fit" class="icon" type="button" title="Reset the zoom"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
-    <!-- TODO: the turn button's title: "Turn the drawing (and the shaded region with it) by 1/n of a full turn, anticlockwise" -->
-    <button id="turn" class="icon latin" type="button" title="Verte diagramma 1/n gyri" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.67 9.79A5 5 0 1 0 4.96 4.96L3.9 6M3.9 3v3h3"/></svg></button>
+    <button id="turn" class="icon latin" type="button" title="Rotate 1/n of a full turn" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.67 9.79A5 5 0 1 0 4.96 4.96L3.9 6M3.9 3v3h3"/></svg></button>
   </div>
   <p id="status" role="status">Loading full image…</p>
   <p id="slow" role="status" hidden>Apparently Firefox is bad at showing this smoothly while panning/zooming.</p>
@@ -179,9 +178,7 @@ const stops = Array.from({ length: n }, (_, i) => {
   })
   check.type = 'checkbox'
   check.disabled = true
-  // TODO: checkbox i's name, and its target's tooltip, "Inside curve i + 1": checked, the shaded region is inside that
-  // curve; unchecked, outside it
-  label.title = check.ariaLabel = `Intra curvam ${i + 1}`
+  label.title = check.ariaLabel = `Shade inside curve ${i + 1}`
   check.addEventListener('change', shade)
   stop.className = 'stop'
   label.append(check)
