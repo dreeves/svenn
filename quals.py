@@ -20,6 +20,18 @@ Jargon, defined once here and used throughout:
   placeholder  someone else's published drawing of an n-Venn diagram, shown
          on the card for n, credited as its license requires, until this site
          has drawn its own. Listed in PLACEHOLDER below.
+  reference  for a browser qual of the viewer's canvas (CANVAS below), the
+         curves of img/venn-NN.svg as the qual draws them itself, on a canvas
+         of its own the size of the viewer's: curve 0's path data handed to
+         the browser's Path2D, stroked once for each curve shown, turned as
+         that curve's use says, in its colour, at the view the qual expects
+         (from its own arithmetic, not the viewer's), with lines as wide on
+         screen as at fit.
+  matches  the viewer's canvas matches its reference when its pixels differ
+         from the reference's by at most a fifth of the reference's ink (the
+         summed difference of their colours, each weighted by its alpha,
+         after scaling the canvas's alpha to the reference's total), and its
+         total ink (alpha) is within a fifth of the reference's.
 """
 import html
 import html.parser
@@ -61,9 +73,11 @@ PUBLISHED_SHA256 = {
 # github.com/dzoba/venn17 commit e89d6f6, under CC BY 4.0 like the rest of that repo's images and paper.
 PLACEHOLDER = {}
 CC_BY = 'https://creativecommons.org/licenses/by/4.0/'
-PNG_ONLY = (23,)   # n whose card links to its PNG: view.html can't show 8,388,606 crossings
 # n whose card opens view.html on this site's own drawing
-VIEWED = tuple(n for n in DRAWN if n not in PLACEHOLDER and n not in PNG_ONLY)
+VIEWED = tuple(n for n in DRAWN if n not in PLACEHOLDER)
+# n whose drawing view.html draws on a canvas, not as SVG paths: 23's curves have 729,449 spans each, too many for SVG
+# paths (see view.html's canvasRenderer())
+CANVAS = (23,)
 PAGES = ('index.html', 'view.html')                        # the site's pages: the list, and the viewer
 DOMAIN = 'svenn.dreev.es'
 
@@ -764,8 +778,8 @@ def qual_svg_defects():
     back = np.array([[p, p + w * (2 * tan + nrm), p + w * (-2 * tan + nrm), p]])
     fmt = lambda x: f'{x:.6f}'.rstrip('0').rstrip('.')
     path = lambda M: ' '.join([f'M{fmt(M[0, 0, 0])},{fmt(M[0, 0, 1])}'] + [
-        f'C{fmt(x1)},{fmt(y1)} {fmt(x2)},{fmt(y2)} {fmt(x3)},{fmt(y3)}' for (x1, y1), (x2, y2), (x3, y3) in M[:, 1:].tolist()]
-        + ['Z'])
+        f'C{fmt(x1)},{fmt(y1)} {fmt(x2)},{fmt(y2)} {fmt(x3)},{fmt(y3)}'
+        for (x1, y1), (x2, y2), (x3, y3) in M[:, 1:].tolist()] + ['Z'])
     bad = []
     with tempfile.TemporaryDirectory() as tmp:
         for what, M, want in (('a loop in a span', np.concatenate([N[:k], La, loop, Rb, N[k + 1:]]), 'self-intersections'),
@@ -1042,7 +1056,8 @@ def browser(check):
     or Firefox. All the checks run together, on first use. They need `cd tools && npm ci`, and Playwright's builds of
     the three browsers (`cd tools && npx playwright install` if they are not already installed)."""
     if 'run' not in _browser:   # kept even when it failed, so that a failing run isn't repeated by every qual
-        _browser['run'] = subprocess.run(['node', str(HERE / 'tools' / 'browser_quals.mjs'), *map(str, VIEWED)],
+        _browser['run'] = subprocess.run(['node', str(HERE / 'tools' / 'browser_quals.mjs'),
+                                          *[str(n) for n in VIEWED if n not in CANVAS], 'canvas', *map(str, CANVAS)],
                                          capture_output=True, text=True)
     run = _browser['run']
     assert run.returncode == 0, run.stderr[-3000:]
@@ -1058,17 +1073,9 @@ def qual_viewer_linked():
 
 
 @qual
-def qual_png_only():
-    """Replicata: on index.html, click the picture on the card for each n whose drawing view.html can't show (23, with
-    8,388,606 crossings). Expectata: it opens the PNG the card shows, img/venn-NN.png."""
-    cards = {int(c['n']): c for c in parse_page().cards}
-    return [f'n={n}: the card shows {cards[n]["imgs"]} and links to {cards[n]["links"]}' for n in PNG_ONLY
-            for png in [f'img/venn-{n:02d}.png'] if cards[n]['imgs'] != [png] or png not in cards[n]['links']]
-
-
-@qual
 def qual_viewer_fit():
-    """Replicata: open view.html?n=N for every n it shows, in Chromium, WebKit and Firefox, in a 1200 by 800 window.
+    """Replicata: open view.html?n=N for every n it draws as SVG paths (every n it shows but those in CANVAS), in
+    Chromium, WebKit and Firefox, in a 1200 by 800 window.
     Expectata: for each n, the drawing's square page fits the space below the controls along the top and clear of
     the swatches, which stand in a row along the bottom or, in a landscape window like this one, in a column along the
     right edge; it is centred in that space, so no control covers it; each curve is a
@@ -1155,8 +1162,9 @@ def qual_viewer_gesture():
 
 @qual
 def qual_viewer_settle():
-    """Replicata: open the viewer for the largest n (drawing 19 anew takes a tenth to half a second); drag the drawing
-    as a hand does, a move every 16 ms, then turn the wheel and pinch the same way, then stop. Expectata: meanwhile it
+    """Replicata: open the viewer for the largest n it draws as SVG paths (drawing 19 anew takes a tenth to half a
+    second); drag the drawing as a hand does, a move every 16 ms, then turn the wheel and pinch the same way, then stop.
+    Expectata: meanwhile it
     moves without being drawn anew: the SVG keeps its viewBox and a CSS transform on the picture already drawn (the
     div #picture, which has will-change: transform) moves it, which browsers do cheaply. Within 2 seconds of the last
     event it is drawn anew at the new view, sharp again, where the moved picture showed it (each point within half a
@@ -1244,14 +1252,110 @@ def qual_viewer_error():
 
 @qual
 def qual_viewer_phone():
-    """Replicata: open the viewer for the largest n on phones with touch screens, 375 by 667, 320 by 568, and 844 by
-    390 (one on its side); tap +.
+    """Replicata: open the viewer for the largest n it draws as SVG paths on phones with touch screens, 375 by 667, 320
+    by 568, and 844 by 390 (one on its side); tap +.
     Expectata: the controls (the back arrow and number; the SVG link and zoom buttons; the swatches) all fit in the
     window without overlapping each other, the page doesn't scroll, and every button and link is at least 44 by 44
     pixels, Apple's guideline for something to touch. After the tap, + looks as it did before it (no hover look stays
     behind, as it does on touch screens unless hover styles are kept to devices that can hover). On the phone on its
     side the swatches stand in a column along the right edge and the drawing fits in at least 300 pixels."""
     return browser('phone')
+
+
+@qual
+def qual_viewer_canvas_fit():
+    """Replicata: open view.html?n=23 (each n in CANVAS, which the viewer draws on a canvas) in Chromium, WebKit and
+    Firefox, in a 1200 by 800 window; turn the wheel to zoom in by 4 about a point on curve 0, then by 16 more about
+    the same spot (64 in all), then as far as it goes (1000); then open it again with two device pixels to a CSS pixel.
+    Expectata: each time, once the drawing has arrived, the canvas covers the window with a pixel for each device pixel
+    (while that keeps lines under 0.85 of its pixels wide: qual_viewer_canvas_big) and matches its reference: at fit
+    the page where qual_viewer_fit puts it, then zoomed about the spot pointed at, which stays put, the lines as wide on
+    screen as at fit, so that bundles of nearly parallel curves come apart."""
+    return browser('canvasFit')
+
+
+@qual
+def qual_viewer_canvas_curves():
+    """Replicata: open view.html?n=23; click the first swatch, then the third, then press Escape. Expectata: one swatch
+    per curve, in its curve's colour (the file's); once each drawing has arrived, the canvas matches its reference
+    with curve 0 alone, then curves 0 to 2, then all 23, and exactly their swatches are pressed (aria-pressed), as in
+    qual_viewer_curves."""
+    return browser('canvasCurves')
+
+
+@qual
+def qual_viewer_canvas_settle():
+    """Replicata: open view.html?n=23 and wait for its drawing; drag the drawing as a hand does, a move every 16 ms,
+    then turn the wheel and pinch the same way, then stop; then show curve 0 alone, and once it is drawn press Escape
+    and at once drag again, until the drawing of all 23 curves has arrived. Expectata: meanwhile nothing is drawn
+    anew: the page asks its worker for nothing (no postMessage), shows no new drawing on its canvas, and draws on or
+    resizes no canvas itself; at every event a CSS transform on the div #picture moves the picture already drawn, the
+    canvas with it (its box on the screen within half a pixel of where the transform puts the box it had). Within 2
+    seconds of the last event the page asks for a new drawing; until that arrives the old one stays where the gestures
+    left it (within half a pixel), and once it has arrived, the picture's transform is the identity again and the
+    canvas matches its reference where the moved picture showed the drawing, with lines as wide as at fit. A drawing
+    asked for before a drag and arriving during it appears where the picture's transform puts it (within half a
+    pixel)."""
+    return browser('canvasSettle')
+
+
+@qual
+def qual_viewer_canvas_resize():
+    """Replicata: open view.html?n=23 in a 1200 by 800 window and wait for its drawing; make the window 1400 by 900;
+    then, in Chromium (the one browser in which these quals can change a page's devicePixelRatio without resizing it,
+    through the DevTools protocol), give it two device pixels to a CSS pixel, as when a window moves to another screen,
+    and send its resolution media query the change event a browser sends then (Chromium doesn't, for this). Expectata: each time it is drawn anew for the window as it now is: the canvas covers the window at its resolution
+    (qual_viewer_canvas_fit) and matches its reference at the view that fits the window."""
+    return browser('canvasResize')
+
+
+@qual
+def qual_viewer_canvas_loading():
+    """Replicata: open view.html?n=23 while img/venn-23.svg is slow to arrive, and click +. Expectata: meanwhile the
+    viewer shows img/venn-23.png, the card's picture, placed as the drawing would be and zoomed by + as it would be,
+    the line saying that the full drawing is on its way, and 23 swatches, all disabled; nothing is drawn on the canvas.
+    Once the SVG has arrived and its first drawing is shown, the PNG and the line are gone, the swatches work, and the
+    canvas matches its reference, zoomed by +."""
+    return browser('canvasLoading')
+
+
+@qual
+def qual_viewer_canvas_error():
+    """Replicata: open view.html?n=23 with img/venn-23.svg replaced by a small drawing of 23 curves in venn.py's format
+    (curve 0 cut to a span and another back to its start); then with img/venn-23.svg answering 404; then with the small
+    drawing changed in one way each: an angle of NaN; a stroke-width of Infinity; a 24th use; the last use gone;
+    another viewBox; an L command in the path; a use of another href; cut short halfway through the path; and then,
+    with img/venn-23.svg as it is, with no Worker to be had, with canvas.js answering 404, and with the worker failing
+    after its first drawing. Expectata: the small drawing as it is is drawn; each of the broken ones shows a visible
+    error saying that img/venn-23.svg couldn't be loaded, with what went wrong in brackets ("(404)" for the 404), and no
+    loading line; the 23 swatches stay disabled, nothing is drawn, and the PNG stays as the picture; and each of the
+    last three shows the same error, with what failed in its brackets (canvas.js, for its 404)."""
+    return browser('canvasError')
+
+
+@qual
+def qual_viewer_canvas_frames():
+    """Replicata: open view.html?n=23 in a 2560 by 1440 window with two device pixels to a CSS pixel, and wait for its
+    drawing; click + three times, each time waiting for the new drawing, timing the page's animation frames.
+    Expectata: from the first click until a second after the last drawing has been shown, no frame takes over 100 ms:
+    the worker draws, so the page goes on answering the pointer. (100 ms is the most a response to input may take and
+    still feel immediate, the response budget of web.dev's RAIL model. On the machine these quals were written on, with
+    its load average near 200, each redraw of 19's SVG paths held the page's frames up for 0.2 to 1.6 s in WebKit and
+    1.3 to 12 s in Firefox.)"""
+    return browser('canvasFrames')
+
+
+@qual
+def qual_viewer_canvas_big():
+    """Replicata: open view.html?n=23 in a 2560 by 1440 window with two device pixels to a CSS pixel, as on a large
+    external display. Expectata: its lines, 0.68 CSS pixel wide at that size, would be 1.35 device pixels wide;
+    instead the canvas has fewer pixels than the screen, as many as keep its lines 0.85 of its pixels wide, and matches
+    its reference at that size; and the first drawing arrives within 20 seconds of opening: Nielsen's 10-second limit
+    for keeping a user's attention, doubled for a busy machine (on the one these quals were written on, with other
+    jobs keeping its load average at 50 to 250, it took 1.4 to 4.1 s, and once over 10). Lines wider than about 0.9
+    device pixel fall off the browsers' fast path for thin lines: with a pixel for each device pixel, this first
+    drawing took 12.5 s in Chromium, 30 in Firefox, and 62 in WebKit, which then showed nothing."""
+    return browser('canvasBig')
 
 
 @qual

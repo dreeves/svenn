@@ -208,9 +208,12 @@ def draw_plotter(n):
     Tutte embedding, then a radial warp), and smooth curve 0, and so by the symmetry every curve, with
     Catmull-Rom splines through its crossings. Smoothing can make curves cross between crossings;
     wherever it does, the tension at the crossings bounding the offending arcs is cut, by whole
-    rotation orbits so the symmetry is kept, down to straight arcs, which are asserted first not to
-    cross. This is the plotter's main() with its planarity sweep replaced by offenders(), and done for
-    curve 0 alone."""
+    rotation orbits so the symmetry is kept, down to straight arcs if need be. (Nothing checks first that
+    the drawing with every arc straight is clean: at 23 it has knots where one curve turns back in a
+    hairpin a few tenths of a degree wide as another passes through, which crossings() cannot certify
+    as straight corners but can once the hairpins are smoothed, and smoothing never needs them
+    straight. smooth() asserts the end result.) This is the plotter's main() with its planarity sweep
+    replaced by offenders(), and done for curve 0 alone."""
     knots, kvid, orb, kof, s = plotter_layout(n)
     return smooth(n, knots, kvid, orb, kof, s), s
 
@@ -259,10 +262,7 @@ def smooth(n, knots, kvid, orb, kof, s):
     def nets(tension):   # tension: one per orbit of crossings
         t = np.where(kvid >= 0, tension[orb[np.maximum(kvid, 0)]], TENSION)
         return np.round(plotter_svg.bezier_controls(knots, t, CAP)[0], DECIMALS)
-    norb = len(orb) // n
-    straight = offenders(n, nets(np.zeros(norb)), kvid, orb, kof, s)
-    assert len(straight) == 0, f'with straight arcs, {len(straight)} orbits of crossings bound arcs that cross'
-    tension = np.full(norb, TENSION)
+    tension = np.full(len(orb) // n, TENSION)
     for attempt in range(8):
         ctrl = nets(tension)
         bad = offenders(n, ctrl, kvid, orb, kof, s)

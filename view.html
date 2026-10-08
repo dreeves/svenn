@@ -23,6 +23,9 @@
   #picture { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; pointer-events: none; }   /* see draw() */
   #stage svg { display: block; width: 100%; height: 100%; pointer-events: none; }   /* hit-testing 19's curves takes seconds */
   #stage path { vector-effect: non-scaling-stroke; stroke-width: var(--stroke); }
+  /* placed by canvasRenderer(); a layer of its own (will-change), so that placing it anew doesn't make WebKit paint its
+     drawing anew (see canvas.js) */
+  #stage canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
   /* The controls: along the top, where you are (back arrow, number) and the tools (SVG link, zoom buttons); along the
      bottom, the swatches, or in a landscape window a column of them along the right edge. At zoom 1 the drawing fits
      in the space they leave (area()), so that none of them covers it. */
@@ -108,7 +111,8 @@
 // buttons, or the keys + - 0 (arrows pan). Each curve has a swatch, which shows the curves up to and including its
 // own, so clicking them left to right adds the curves one at a time; the last, or Escape, shows them all. Lines keep
 // the width they have when the drawing fits however far it's zoomed in, so close curves come apart. Until the SVG has
-// arrived, the card's PNG stands in for it.
+// arrived, the card's PNG stands in for it. 23's drawing is too big for SVG paths, so it is drawn on a canvas instead
+// (canvasRenderer()); the rest is the same for every n.
 const SVGNS = 'http://www.w3.org/2000/svg'
 const PAGE = 51200                     // the side of every drawing's square page, in SVG units (venn.py's PAGE)
 const ZOOM = [1 / 2, 1000]             // how far out and in it zooms, relative to the page just fitting
@@ -151,9 +155,13 @@ const swatches = Array.from({ length: n }, (_, i) => {
   return b
 })
 
+// What differs between drawing as SVG paths and on a canvas: how the drawing is loaded, how curves are shown and
+// hidden, and what redraw() does besides setting the SVG's viewBox
+const renderer = n === 23 ? canvasRenderer() : svgRenderer()
+
 // Show curves 0 to k and hide the rest, marking the swatches of the curves shown as pressed
 function show(k) {
-  svg.querySelectorAll('path').forEach((p, j) => { p.style.display = j <= k ? '' : 'none' })
+  renderer.show(k)
   swatches.forEach((b, j) => b.setAttribute('aria-pressed', String(j <= k)))
 }
 
@@ -206,6 +214,7 @@ function redraw() {
   svg.style.setProperty('--stroke', `${stroke * a.side / PAGE}px`)
   picture.style.transform = 'translate(0px, 0px) scale(1)'   // the identity: from none, WebKit's next gesture stalls
   drawn = view
+  renderer.redraw()
 }
 
 // Zoom by f about the window point (x, y), which goes on showing the same point of the drawing
@@ -290,6 +299,14 @@ addEventListener('keydown', e => {
   KEYS[e.key]?.()
 })
 addEventListener('resize', redraw)   // the picture last drawn was for the old window
+// and for the old devicePixelRatio, which can change with no resize (the window moved to another screen)
+function resolution() {
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', () => {
+    resolution()
+    redraw()
+  }, { once: true })
+}
+resolution()
 
 // The file holds curve 0 once and draws curve i as a <use> of it rotated about the page centre (venn.py's write_svg()):
 // 1/n of the bytes to download. Each curve becomes a path of its own here, its points rotated: Firefox drew 19's
@@ -319,24 +336,91 @@ function curves(text) {
   })
 }
 
-const status = document.getElementById('status')
-fetch(file)
-  .then(r => r.ok ? r.text() : Promise.reject(new Error(r.status)))   // just the status: HTTP/2 has no status text
-  .then(text => {
-    const paths = curves(text)
-    stroke = Number(paths[0].getAttribute('stroke-width'))
-    svg.replaceChildren(...paths)
-    swatches.forEach((b, i) => {
-      b.style.setProperty('--colour', paths[i].getAttribute('stroke'))
-      b.disabled = false
+// The curves as SVG paths, which the browser draws anew whenever redraw() sets the SVG's viewBox
+function svgRenderer() {
+  return {
+    show: k => svg.querySelectorAll('path').forEach((p, j) => { p.style.display = j <= k ? '' : 'none' }),
+    redraw() {},
+    load: () => fetch(file)
+      .then(r => r.ok ? r.text() : Promise.reject(new Error(r.status)))   // just the status: HTTP/2 has no status text
+      .then(text => {
+        const paths = curves(text)
+        stroke = Number(paths[0].getAttribute('stroke-width'))
+        svg.replaceChildren(...paths)
+        redraw()
+        return paths.map(p => p.getAttribute('stroke'))
+      }),
+  }
+}
+
+// The curves on a canvas, for 23, whose curves have 729,449 spans each, too many for SVG paths. A worker, canvas.js,
+// loads the file and draws each view redraw() asks for on a canvas of its own, then posts back the drawing, an
+// ImageBitmap, for the canvas here to show. Until a new drawing arrives the one before stays, placed by place() where
+// the view last drawn shows it, so that the picture's transform moves it as it moves the SVG (which holds the stand-in
+// PNG until the first drawing). The first drawing comes once the worker has loaded the file; if it can't, an error.
+function canvasRenderer() {
+  const canvas = document.createElement('canvas'), bitmap = canvas.getContext('bitmaprenderer')
+  let worker = null                      // made in first's executor, so that a browser that can't make one rejects it
+  let k = n - 1                          // curves 0 to k are shown
+  let at = { x: 0, y: 0, s: 1 }          // the canvas's drawing: page point (x, y) at its top left, s page units to a
+                                         // CSS pixel (any, until there is a drawing)
+  canvas.setAttribute('aria-hidden', 'true')   // the SVG is the image to a screen reader
+  picture.append(canvas)
+  function place() {                     // the canvas's drawing where the view last drawn, drawn, shows it
+    const a = area(), s = scale(a, drawn.z), x = drawn.cx - a.x * s, y = drawn.cy - a.y * s
+    canvas.style.transform = `translate(${(at.x - x) / s}px, ${(at.y - y) / s}px) scale(${at.s / s})`
+  }
+  const first = new Promise((ok, fail) => {   // the first drawing shown, giving the curves' colours
+    worker = new Worker(`canvas.js?${new URLSearchParams({ file, n })}`)
+    // an error, before the first drawing or after it, shows the error (a worker's own error event, as when canvas.js
+    // itself can't be loaded, has no message to speak of, so it says where it came from)
+    const broke = e => {
+      failed(e)
+      fail(e)
+    }
+    worker.addEventListener('error', e => broke(new Error(`canvas.js: ${e.message}`)))
+    worker.addEventListener('message', ({ data }) => {
+      if ('error' in data) return broke(new Error(data.error))
+      canvas.width = data.bitmap.width
+      canvas.height = data.bitmap.height
+      canvas.style.width = `${data.bitmap.width / data.r}px`
+      canvas.style.height = `${data.bitmap.height / data.r}px`
+      bitmap.transferFromImageBitmap(data.bitmap)
+      thumb.remove()
+      at = data.at
+      place()
+      ok(data.colours)
     })
-    redraw()
   })
-  .catch(e => {
-    const error = document.getElementById('error')
-    error.textContent = `Couldn't load ${file} (${e.message})`
-    error.hidden = false
-  })
+  return {
+    show(i) {
+      k = i
+      redraw()
+    },
+    redraw() {
+      const a = area(), s = scale(a, view.z)
+      place()
+      worker.postMessage({ x: view.cx - a.x * s, y: view.cy - a.y * s, s, fit: scale(a, 1), w: stage.clientWidth,
+                           h: stage.clientHeight, dpr: devicePixelRatio, k })
+    },
+    load: () => first,
+  }
+}
+
+// The error shown when the drawing can't be loaded (or, on a canvas, drawn)
+function failed(e) {
+  const error = document.getElementById('error')
+  error.textContent = `Couldn't load ${file} (${e.message})`
+  error.hidden = false
+}
+
+const status = document.getElementById('status')
+renderer.load()
+  .then(colours => swatches.forEach((b, i) => {
+    b.style.setProperty('--colour', colours[i])
+    b.disabled = false
+  }))
+  .catch(failed)
   .finally(() => { status.hidden = true })
 redraw()
 </script>

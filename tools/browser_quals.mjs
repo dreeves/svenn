@@ -2,7 +2,8 @@
 // opens the viewer in Chromium, WebKit and Firefox with Playwright, and prints {check: [problem, ...]} as JSON, each
 // problem one line naming the browser and what went wrong. quals.py holds each check's replicata and expectata.
 //
-// Usage: node tools/browser_quals.mjs N ...   (every n whose drawing the viewer shows; quals.py passes them)
+// Usage: node tools/browser_quals.mjs N ... canvas N ...   (every n whose drawing the viewer shows as SVG paths, then
+// every n it draws on a canvas; quals.py passes them)
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import path from 'node:path'
@@ -11,12 +12,15 @@ import { fileURLToPath } from 'node:url'
 import { chromium, firefox, webkit } from 'playwright'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const VIEWED = process.argv.slice(2).map(Number)
+const ARGS = process.argv.slice(2), CUT = ARGS.indexOf('canvas')
+assert(CUT >= 0, `no "canvas" among the arguments: ${ARGS}`)
+const PATHS = ARGS.slice(0, CUT).map(Number)    // the n whose drawings the viewer shows as SVG paths
+const CANVAS = ARGS.slice(CUT + 1).map(Number)  // and those it draws on a canvas
 const SMALL = 7                       // the n most checks use: quick to load, with curves enough to tell apart
 const W = 1200, H = 800               // the window
 const TYPES = { '.html': 'text/html', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
-                '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' }
-assert(VIEWED.includes(SMALL), `n = ${SMALL} is not among the n given: ${VIEWED}`)
+                '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.js': 'text/javascript' }
+assert(PATHS.includes(SMALL), `n = ${SMALL} is not among the n given: ${PATHS}`)
 const nn = n => String(n).padStart(2, '0')   // as in the drawings' file names
 
 // A static file server for the repo, answering 404 for what is not there, as GitHub Pages does
@@ -82,9 +86,152 @@ function holds(problem, m, s, p, want, what) {
   if (Math.abs(m.a / want - 1) > 1e-3 || Math.abs(m.d / want - 1) > 1e-3) problem(`${what}: scale ${m.a}, ${m.d}, not ${want}`)
 }
 
+// ---- The canvas. The viewer draws each n in CANVAS on a canvas, by a worker, not as SVG paths. Its checks see it
+// through spy() and compare(), and compute each view they expect themselves, as a mapping {x, y, s}: page point (x, y)
+// at the window's top left, s page units to a CSS pixel.
+
+// Installed in the page before the viewer's own script (page.addInitScript). window.__seen records the times (the
+// page's clock, in ms) when the page asks a worker for anything (asked: postMessage), shows a new drawing on a canvas
+// (shown: transferFromImageBitmap), and draws on or resizes a canvas in the document itself (drawn); and when each
+// animation frame begins (frames).
+function spy() {
+  const seen = window.__seen = { asked: [], shown: [], drawn: [], frames: [] }
+  const log = (list, proto, k, counts = () => true) => {
+    const f = proto[k]
+    proto[k] = function (...args) {
+      if (counts(this)) list.push(performance.now())
+      return f.apply(this, args)
+    }
+  }
+  log(seen.asked, Worker.prototype, 'postMessage')
+  log(seen.shown, ImageBitmapRenderingContext.prototype, 'transferFromImageBitmap')
+  for (const k of ['stroke', 'fill', 'drawImage', 'putImageData', 'clearRect', 'fillRect', 'strokeRect', 'fillText', 'strokeText'])
+    log(seen.drawn, CanvasRenderingContext2D.prototype, k, ctx => ctx.canvas.isConnected)
+  for (const k of ['width', 'height']) {   // setting either clears a canvas
+    const d = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, k)
+    Object.defineProperty(HTMLCanvasElement.prototype, k, { ...d, set(v) {
+      if (this.isConnected) seen.drawn.push(performance.now())
+      d.set.call(this, v)
+    } })
+  }
+  const frame = t => {
+    seen.frames.push(t)
+    requestAnimationFrame(frame)
+  }
+  requestAnimationFrame(frame)
+}
+
+// In the page: the viewer's canvas against its reference, curves 0 to k of the drawing's file as this draws them
+// itself: curve 0's path data handed to Path2D (once a page), stroked once a curve, turned as its use says, in its
+// colour, under mapping m, with lines px CSS pixels wide, at r canvas pixels to a CSS pixel, on a canvas the size of
+// the viewer's. mismatch: the summed difference of their colours, each weighted by its alpha, the canvas's alpha first
+// scaled by 1 / ink (so that antialiasing that covers a few percent more or less differs only in ink), over the
+// reference's own sum: 0 for the same picture, about 2 for pictures with nothing in common. ink: the canvas's total
+// alpha over the reference's. Also the canvas's size in pixels and its box in the window.
+async function compare([file, m, k, px, r]) {
+  window.__file ??= fetch(file).then(r => r.text()).then(text => ({
+    path: new Path2D(text.match(/<path id="curve" d="([^"]*)"/)[1]),
+    uses: [...text.matchAll(/<use [^>]*? stroke="([^"]*)" [^>]*? transform="rotate\(([^ ]+) ([^ ]+) ([^ ]+)\)"\/>/g)]
+      .map(([, stroke, deg, cx, cy]) => ({ stroke, deg: Number(deg), cx: Number(cx), cy: Number(cy) })),
+  }))
+  const f = await window.__file, view = document.querySelector('#stage canvas'), box = view.getBoundingClientRect()
+  const w = view.width, h = view.height
+  const pixels = draw => {
+    const c = document.createElement('canvas')   // not in the document, so not counted by spy()
+    c.width = w
+    c.height = h
+    const g = c.getContext('2d', { willReadFrequently: true })
+    draw(g)
+    return g.getImageData(0, 0, w, h).data
+  }
+  const V = pixels(g => g.drawImage(view, 0, 0))
+  const R = pixels(g => {
+    g.lineCap = g.lineJoin = 'round'
+    g.lineWidth = px * m.s
+    for (const u of f.uses.slice(0, k + 1)) {
+      g.setTransform(new DOMMatrix([r / m.s, 0, 0, r / m.s, -m.x * r / m.s, -m.y * r / m.s])
+        .translate(u.cx, u.cy).rotate(u.deg).translate(-u.cx, -u.cy))
+      g.strokeStyle = u.stroke
+      g.stroke(f.path)
+    }
+  })
+  let va = 0, ra = 0
+  for (let i = 3; i < V.length; i += 4) { va += V[i]; ra += R[i] }
+  const scale = va ? ra / va : 1
+  let diff = 0, sum = 0
+  for (let i = 0; i < V.length; i += 4) {
+    const av = V[i + 3] * scale, ar = R[i + 3]
+    diff += Math.abs(V[i] * av - R[i] * ar) + Math.abs(V[i + 1] * av - R[i + 1] * ar) +
+            Math.abs(V[i + 2] * av - R[i + 2] * ar) + 255 * Math.abs(av - ar)
+    sum += (R[i] + R[i + 1] + R[i + 2] + 255) * ar
+  }
+  return { mismatch: diff / sum, ink: va / ra, size: [w, h], box: [box.left, box.top, box.width, box.height],
+           window: [innerWidth, innerHeight] }
+}
+
+// The mapping at fit: the page's centre at the centre of area() a, its side (in page units) across a.side pixels
+const fitted = (a, side) => ({ s: side / a.side, x: side / 2 - a.x * side / a.side, y: side / 2 - a.y * side / a.side })
+// Mapping m zoomed by f about window point (x, y), which goes on showing the same page point; held to 1/2 to 1000
+// times the fit
+function zoomed(m, fit, [x, y], f) {
+  const s = fit.s / Math.min(Math.max(fit.s / m.s * f, 1 / 2), 1000)
+  return { s, x: m.x + x * (m.s - s), y: m.y + y * (m.s - s) }
+}
+
+// Expect the canvas to match its reference: curves 0 to k of drawing n under mapping m, with lines as wide on screen as
+// at fit, at the canvas's resolution: a pixel for each device pixel, or fewer, as many as make the lines 0.85 of the
+// canvas's pixels wide (see qual_viewer_canvas_big)
+async function matches(page, n, m, k, what, problem) {
+  const { page: side, stroke } = await drawing(n), a = await area(page)
+  const px = stroke * a.side / side, dpr = await page.evaluate(() => devicePixelRatio), r = Math.min(dpr, 0.85 / px)
+  const got = await page.evaluate(compare, [`img/venn-${nn(n)}.svg`, m, k, px, r])
+  const [w, h] = got.window, want = [Math.round(w * r), Math.round(h * r)]
+  if (String(got.size) !== String(want)) problem(`${what}: the canvas has ${got.size} pixels, not ${want} (${r} to a CSS pixel)`)
+  if (got.box.some((v, i) => Math.abs(v - [0, 0, w, h][i]) > 1)) problem(`${what}: the canvas covers ${got.box}, not the window, ${w} by ${h}`)
+  if (!(got.mismatch <= 0.2)) problem(`${what}: differs from its reference by ${got.mismatch.toFixed(3)} of its ink`)
+  if (!(Math.abs(got.ink - 1) <= 0.2)) problem(`${what}: ${got.ink.toFixed(3)} times the reference's ink`)
+}
+
+const now = page => page.evaluate(() => performance.now())
+// Wait until the canvas shows the drawing last asked for, asked after page time t (the viewer asks SETTLE ms after the
+// view stops, or at once, as after a swatch)
+const drawnSince = (page, t, timeout = 180000) => page.waitForFunction(t => {
+  const { asked, shown } = window.__seen
+  return asked.at(-1) > t && shown.at(-1) > asked.at(-1)
+}, t, { timeout, polling: 100 })
+
+// Open the viewer for n with spy() installed, and wait for its first drawing (loading 23, 56 MB, and drawing it can
+// take a busy machine tens of seconds). The viewer puts its canvas in #stage at once: without one in 5 s, fail rather
+// than wait, since an SVG viewer would go on to make paths of all of 23's 56 MB.
+async function openCanvas(page, n) {
+  await page.addInitScript(spy)
+  await page.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
+  await page.waitForSelector('#stage canvas', { state: 'attached', timeout: 5000 })
+  await drawnSince(page, 0)
+  await page.waitForFunction(n => document.querySelectorAll('#curves button:enabled').length === n, n)
+}
+
+// A page in a context of its own, a window w by h with dpr device pixels to a CSS pixel
+async function sized(page, w, h, dpr) {
+  const context = await page.context().browser().newContext({ viewport: { width: w, height: h }, deviceScaleFactor: dpr })
+  const p = await context.newPage()
+  p.setDefaultTimeout(10000)
+  await p.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort())
+  return p
+}
+
+// Drawing n's file: its text, the first knots of curve 0 (its start and the ends of its first spans, which lie on it),
+// and the colours of its uses
+async function source(n) {
+  const text = await readFile(path.join(ROOT, 'img', `venn-${nn(n)}.svg`), 'utf8'), d = text.indexOf(' d="') + 4
+  const xy = text.slice(d, text.indexOf(' C', text.indexOf(' C', d + 1) + 1)).match(/-?\d+(?:\.\d+)?/g).map(Number)
+  return { text, knots: [[xy[0], xy[1]], [xy[6], xy[7]]], colours: [...text.matchAll(/ stroke="(#[0-9a-f]{6})"/g)].map(m => m[1]) }
+}
+const rgb = hex => `rgb(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(', ')})`
+
 const CHECKS = {
   async fit(page, problem) {
-    for (const n of VIEWED) {
+    for (const n of PATHS) {
       await (async () => {
         await open(page, n)
         const { page: side, stroke } = await drawing(n)
@@ -306,7 +453,7 @@ const CHECKS = {
   },
 
   async settle(page, problem) {
-    await open(page, Math.max(...VIEWED))
+    await open(page, Math.max(...PATHS))
     // A drag, a run of wheel turns and a two-finger pinch as a hand makes them, an event every 16 ms (60 a second),
     // driven from inside the page so that they come that fast however slowly this harness could step them
     const r = await page.evaluate(async () => {
@@ -528,7 +675,7 @@ const CHECKS = {
   },
 
   async phone(page, problem) {
-    const n = Math.max(...VIEWED)
+    const n = Math.max(...PATHS)
     for (const [w, h] of [[375, 667], [320, 568], [844, 390]]) {
       const phone = await page.context().browser().newContext({ viewport: { width: w, height: h }, hasTouch: true })
       const p = await phone.newPage()
@@ -561,6 +708,339 @@ const CHECKS = {
       await p.waitForTimeout(300)
       if (await look() !== was) problem(`${w} wide: after a tap, + has border ${await look()}, not ${was} as before`)
       await phone.close()
+    }
+  },
+
+  // ---- The canvas (CANVAS); see spy() and compare()
+
+  async canvasFit(page, problem) {
+    for (const n of CANVAS) {
+      const { page: side } = await drawing(n), { knots } = await source(n)
+      await openCanvas(page, n)
+      const fit = fitted(await area(page), side)
+      await matches(page, n, fit, n - 1, `n=${n} at fit`, problem)
+      // Zoom about a point on curve 0, to the pixel (browsers report a wheel's position in whole pixels)
+      const s = knots[1].map((v, i) => Math.round((v - [fit.x, fit.y][i]) / fit.s))
+      let m = fit
+      for (const f of [4, 16, 1000 / 64]) {
+        const t = await now(page)
+        await page.evaluate(([x, y, deltaY]) => document.getElementById('stage').dispatchEvent(
+          new WheelEvent('wheel', { deltaY, clientX: x, clientY: y, bubbles: true, cancelable: true })), [...s, -400 * Math.log(f)])
+        m = zoomed(m, fit, s, f)
+        await drawnSince(page, t)
+        await matches(page, n, m, n - 1, `n=${n} zoomed in by ${(fit.s / m.s).toPrecision(4)} about ${s}`, problem)
+      }
+      await page.goto('about:blank')   // one drawing of 23 in memory at a time
+      const p = await sized(page, W, H, 2)
+      try {
+        await openCanvas(p, n)
+        await matches(p, n, fitted(await area(p), side), n - 1, `n=${n} at fit, 2 device pixels to a CSS pixel`, problem)
+      } finally {
+        await p.context().close()   // even after a failure: one drawing of 23 in memory at a time
+      }
+    }
+  },
+
+  async canvasCurves(page, problem) {
+    for (const n of CANVAS) {
+      const { page: side } = await drawing(n), { colours } = await source(n)
+      await openCanvas(page, n)
+      const fit = fitted(await area(page), side)
+      const swatches = await page.evaluate(() => [...document.querySelectorAll('#curves button')].map(b => getComputedStyle(b).backgroundColor))
+      if (String(swatches) !== String(colours.map(rgb))) problem(`n=${n}: swatches ${swatches}, not the curves' ${colours}`)
+      for (const [act, k, what] of [[() => page.locator('#curves button').nth(0).click(), 0, 'clicking the first swatch'],
+                                    [() => page.locator('#curves button').nth(2).click(), 2, 'clicking the third swatch'],
+                                    [() => page.keyboard.press('Escape'), n - 1, 'pressing Escape']]) {
+        const t = await now(page)
+        await act()
+        await drawnSince(page, t)
+        await matches(page, n, fit, k, `n=${n}, after ${what}`, problem)
+        const pressed = await page.evaluate(() => [...document.querySelectorAll('#curves button')].map(b => b.getAttribute('aria-pressed') === 'true'))
+        const want = pressed.map((_, i) => i <= k)
+        if (String(pressed) !== String(want)) problem(`n=${n}, after ${what}: swatches pressed ${pressed}, not ${want}`)
+      }
+    }
+  },
+
+  async canvasSettle(page, problem) {
+    for (const n of CANVAS) {
+      const { page: side } = await drawing(n), { knots } = await source(n)
+      await openCanvas(page, n)
+      const fit = fitted(await area(page), side)
+      // A drag, a run of wheel turns and a two-finger pinch as a hand makes them, an event every 16 ms, as in settle,
+      // starting from a point on curve 0, (x, y), so that the view they end in shows curves. At every event, how far the
+      // canvas's box on the screen is from where the picture's transform puts the box it had before (off); after the
+      // last, how far it moves from there until the new drawing arrives (pending)
+      const [x, y] = knots[1].map((v, i) => Math.round((v - [fit.x, fit.y][i]) / fit.s))
+      const r = await page.evaluate(async ([x, y]) => {
+        const stage = document.getElementById('stage'), picture = () => getComputedStyle(document.getElementById('picture')).transform
+        const ptr = (type, id, x, y, buttons, pointerType) => stage.dispatchEvent(new PointerEvent(type,
+          { pointerId: id, pointerType, isPrimary: id === 1, button: 0, buttons, clientX: x, clientY: y, bubbles: true }))
+        const wait = ms => new Promise(ok => setTimeout(ok, ms))
+        const box = () => { const b = document.querySelector('#stage canvas').getBoundingClientRect(); return [b.left, b.top, b.width, b.height] }
+        const B0 = box(), off = []
+        const at = (B, m) => [m.a * B[0] + m.e, m.d * B[1] + m.f, m.a * B[2], m.d * B[3]]
+        const gap = (b, c) => Math.max(...b.map((v, i) => Math.abs(v - c[i])))
+        const track = () => off.push(gap(box(), at(B0, new DOMMatrix(picture()))))
+        const before = picture(), during = [], t0 = performance.now()
+        ptr('pointerdown', 1, x, y, 1, 'mouse')
+        for (let i = 1; i <= 15; i++) { ptr('pointermove', 1, x + 5 * i, y + 3 * i, 1, 'mouse'); during.push(picture()); track(); await wait(16) }
+        ptr('pointerup', 1, x + 75, y + 45, 0, 'mouse')
+        for (let i = 0; i < 10; i++) {
+          dispatchEvent(new WheelEvent('wheel', { deltaY: -40, clientX: x + 75, clientY: y + 45, bubbles: true, cancelable: true }))
+          during.push(picture()); track(); await wait(16)
+        }
+        ptr('pointerdown', 1, x + 75, y + 45, 1, 'touch'); ptr('pointerdown', 2, x + 135, y + 45, 1, 'touch')
+        for (let i = 1; i <= 10; i++) { ptr('pointermove', 2, x + 135 + 6 * i, y + 45, 1, 'touch'); during.push(picture()); track(); await wait(16) }
+        ptr('pointerup', 2, x + 195, y + 45, 0, 'touch'); ptr('pointerup', 1, x + 75, y + 45, 0, 'touch')
+        const t1 = performance.now(), moved = picture(), seen = window.__seen, B1 = box()
+        const meanwhile = list => list.filter(t => t >= t0 && t <= t1).length
+        let pending = 0
+        while (!seen.asked.some(t => t > t1) && performance.now() - t1 < 2000) await wait(10)
+        while (!(seen.shown.at(-1) > seen.asked.at(-1)) && performance.now() - t1 < 60000) {
+          pending = Math.max(pending, gap(box(), B1))
+          await wait(10)
+        }
+        return { before, during, moved, t1, off: Math.max(...off), pending, asked: seen.asked.find(t => t > t1) - t1,
+                 meanwhile: [meanwhile(seen.asked), meanwhile(seen.shown), meanwhile(seen.drawn)] }
+      }, [x, y])
+      const IDENTITY = 'matrix(1, 0, 0, 1, 0, 0)'
+      if (r.before !== IDENTITY) problem(`n=${n}: drawn, the picture's transform is ${r.before}, not the identity`)
+      if (String(r.meanwhile) !== '0,0,0') problem(`n=${n}: during the gestures the page asked its worker ${r.meanwhile[0]} times, showed ${r.meanwhile[1]} new drawings and drew on or resized a canvas ${r.meanwhile[2]} times`)
+      const unmoved = r.during.filter(t => t === IDENTITY).length
+      if (unmoved) problem(`n=${n}: the picture not moved by a transform in ${unmoved} of the 35 events`)
+      if (!(r.off <= 0.5)) problem(`n=${n}: during the gestures the canvas was up to ${r.off.toFixed(1)} pixels from where the picture's transform put the drawing`)
+      if (!(r.pending <= 0.5)) problem(`n=${n}: waiting for the new drawing, the old one moved up to ${r.pending.toFixed(1)} pixels from where the gestures left it`)
+      if (!(r.asked <= 2000)) problem(`n=${n}: no new drawing asked for within 2 seconds of the gestures ending`)
+      await drawnSince(page, r.t1)
+      // Where the moved picture showed the drawing: the fit, under the picture's transform matrix(k, 0, 0, k, tx, ty)
+      const [k, , , , tx, ty] = r.moved.slice(7, -1).split(',').map(Number)
+      await matches(page, n, { s: fit.s / k, x: fit.x - tx * fit.s / k, y: fit.y - ty * fit.s / k }, n - 1, `n=${n}, drawn anew after the gestures`, problem)
+      const after = await page.evaluate(() => getComputedStyle(document.getElementById('picture')).transform)
+      if (after !== IDENTITY) problem(`n=${n}: once drawn anew, the picture's transform is ${after}, not the identity`)
+      // A drawing asked for before a drag and arriving during it: curve 0 alone, then all of them (Escape), then a drag
+      // at once, a move every 16 ms, until 10 moves after the drawing arrives. At every move, how far the canvas is from
+      // where the picture's transform puts the drawing
+      const t2 = await now(page)
+      await page.click('#curves button')
+      await drawnSince(page, t2)
+      const a = await page.evaluate(async ([x, y]) => {
+        const stage = document.getElementById('stage'), wait = ms => new Promise(ok => setTimeout(ok, ms))
+        const ptr = (type, x, y, buttons) => stage.dispatchEvent(new PointerEvent(type,
+          { pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons, clientX: x, clientY: y, bubbles: true }))
+        const box = () => { const b = document.querySelector('#stage canvas').getBoundingClientRect(); return [b.left, b.top, b.width, b.height] }
+        const B0 = box(), seen = window.__seen, off = []
+        dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        const t = performance.now()
+        ptr('pointerdown', x, y, 1)
+        let i = 0, after = 0
+        while (after < 10 && performance.now() - t < 60000) {
+          i++
+          ptr('pointermove', x + (i % 200), y + (i % 120) / 2, 1)
+          const m = new DOMMatrix(getComputedStyle(document.getElementById('picture')).transform), b = box()
+          if (seen.shown.at(-1) > t) {
+            after++
+            off.push(Math.max(...[m.a * B0[0] + m.e, m.d * B0[1] + m.f, m.a * B0[2], m.d * B0[3]].map((v, j) => Math.abs(v - b[j]))))
+          }
+          await wait(16)
+        }
+        ptr('pointerup', x, y, 0)
+        return { after, off: Math.max(...off) }
+      }, [x, y])
+      if (a.after < 10) problem(`n=${n}: the drawing asked for before the drag didn't arrive during it`)
+      else if (!(a.off <= 0.5)) problem(`n=${n}: a drawing arriving during a drag was up to ${a.off.toFixed(1)} pixels from where the picture's transform put it`)
+    }
+  },
+
+  async canvasResize(page, problem) {
+    for (const n of CANVAS) {
+      const { page: side } = await drawing(n)
+      await page.addInitScript(() => {   // keep the page's resolution media queries, to tell them of a change below
+        const matchMedia = window.matchMedia.bind(window)
+        window.__resolution = []
+        window.matchMedia = q => {
+          const m = matchMedia(q)
+          if (q.includes('resolution')) window.__resolution.push(m)
+          return m
+        }
+      })
+      await openCanvas(page, n)
+      const t = await now(page)
+      await page.setViewportSize({ width: 1400, height: 900 })
+      await drawnSince(page, t)
+      await matches(page, n, fitted(await area(page), side), n - 1, `n=${n}, after a resize to 1400 by 900`, problem)
+      // A new devicePixelRatio with no resize, as when the window moves to another screen: only Chromium lets a page's
+      // be changed, through the DevTools protocol, and then it doesn't send the change event a browser sends the
+      // resolution media queries when that happens, so this sends it
+      if (page.context().browser().browserType().name() === 'chromium') {
+        const cdp = await page.context().newCDPSession(page), t2 = await now(page)
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 2, mobile: false })
+        await page.evaluate(() => window.__resolution.at(-1)?.dispatchEvent(new Event('change')))
+        await drawnSince(page, t2, 60000)
+        await matches(page, n, fitted(await area(page), side), n - 1, `n=${n}, after a change to 2 device pixels to a CSS pixel`, problem)
+      }
+    }
+  },
+
+  async canvasLoading(page, problem) {
+    for (const n of CANVAS) {
+      const { page: side } = await drawing(n)
+      let release
+      const gate = new Promise(ok => { release = ok })
+      await page.route(`**/img/venn-${nn(n)}.svg`, async route => { await gate; await route.continue() })
+      await page.addInitScript(spy)
+      await page.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
+      await page.waitForSelector('#stage canvas', { state: 'attached', timeout: 5000 })
+      await page.waitForSelector('#curves button')
+      const state = async () => ({ ...(await page.evaluate(() => ({
+        image: [...document.querySelectorAll('#stage image')].map(i => i.getAttribute('href')),
+        enabled: document.querySelectorAll('#curves button:enabled').length,
+        swatches: document.querySelectorAll('#curves button').length,
+        shown: window.__seen.shown.length }))),
+        status: await page.locator('#status').isVisible() })
+      const s0 = await state()
+      const want0 = { image: [`img/venn-${nn(n)}.png`], enabled: 0, swatches: n, shown: 0, status: true }
+      if (JSON.stringify(s0) !== JSON.stringify(want0)) problem(`n=${n}, while the SVG loads: ${JSON.stringify(s0)}, not ${JSON.stringify(want0)}`)
+      const box = () => page.evaluate(() => {
+        const r = document.querySelector('#stage image')?.getBoundingClientRect() ?? {}
+        return [r.left, r.top, r.width, r.height]
+      })
+      const a = await area(page), { x, y, side: px } = a, t = await now(page)
+      for (const [want, what] of [[[x - px / 2, y - px / 2, px, px], 'fitting the window'],
+                                  [[x - px, y - px, 2 * px, 2 * px], 'after the + button']]) {
+        if (what !== 'fitting the window') await page.click('#in')
+        const got = await box()
+        if (!got.every((v, i) => Math.abs(v - want[i]) <= 0.5)) problem(`n=${n}: the stand-in PNG ${what}: ${got}, not ${want}`)
+      }
+      release()
+      await drawnSince(page, t)
+      await page.waitForFunction(n => document.querySelectorAll('#curves button:enabled').length === n, n)
+      const s1 = await state()
+      const want1 = { image: [], enabled: n, swatches: n, shown: s1.shown, status: false }
+      if (JSON.stringify(s1) !== JSON.stringify(want1)) problem(`n=${n}, once drawn: ${JSON.stringify(s1)}, not ${JSON.stringify(want1)}`)
+      const fit = fitted(a, side)
+      await matches(page, n, zoomed(fit, fit, [a.x, a.y], 2), n - 1, `n=${n}, drawn after the + button`, problem)
+      await page.unroute(`**/img/venn-${nn(n)}.svg`)
+    }
+  },
+
+  async canvasError(page, problem) {
+    for (const n of CANVAS) {
+      // A small drawing in venn.py's format: the file's own, with curve 0 cut to its first span and one back to its start
+      const { text } = await source(n), d = text.indexOf(' d="') + 4, z = text.indexOf(' Z"', d)
+      const span = text.slice(d, text.indexOf(' C', text.indexOf(' C', d) + 1))   // "Mx0,y0 Cx,y x,y x1,y1"
+      const start = span.slice(1, span.indexOf(' ')), end = span.slice(span.lastIndexOf(' ') + 1)
+      const small = `${text.slice(0, d)}${span} C${end} ${start} ${start}${text.slice(z)}`
+      const use = i => small.match(new RegExp(`<use id="curve-${i}" [^\\n]*\\n`))[0]
+      const broken = [
+        ['an angle of NaN', small.replace(use(5), use(5).replace(/rotate\([^ ]+/, 'rotate(NaN'))],
+        ['a stroke-width of Infinity', small.replace(use(0), use(0).replace(/stroke-width="[^"]+"/, 'stroke-width="Infinity"'))],
+        ['a 24th use', small.replace('</svg>', use(n - 1).replace(`curve-${n - 1}`, `curve-${n}`) + '</svg>')],
+        ['the last use gone', small.replace(use(n - 1), '')],
+        ['another viewBox', small.replace(/viewBox="0 0 (\d+) \d+"/, 'viewBox="0 0 $1 1"')],
+        ['an L command', small.replace(`C${end} ${start}`, `L${end} ${start}`)],
+        ['a use of another href', small.replace(use(3), use(3).replace('href="#curve"', 'href="#other"'))],
+        ['cut short', small.slice(0, d + span.length / 2)],
+      ]
+      broken.filter(([, body]) => body === small).forEach(([what]) => problem(`n=${n}: ${what}: nothing changed`))
+      let body = small
+      await page.route(`**/img/venn-${nn(n)}.svg`, route => route.fulfill(
+        body === null ? { status: 404, body: '' } : { status: 200, contentType: 'image/svg+xml', body }))
+      await page.addInitScript(spy)
+      await page.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
+      await page.waitForSelector('#stage canvas', { state: 'attached', timeout: 5000 })
+      await drawnSince(page, 0, 30000).catch(() => problem(`n=${n}, the small drawing: not drawn within 30 seconds`))
+      if (await page.locator('#error').isVisible()) problem(`n=${n}, the small drawing: ${await page.locator('#error').textContent()}`)
+      for (const [what, b] of [['404', null], ...broken]) {
+        body = b
+        await page.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
+        await page.waitForSelector('#error', { state: 'visible', timeout: 30000 })
+        const got = await page.evaluate(() => ({ text: document.getElementById('error').textContent,
+                                                 status: getComputedStyle(document.getElementById('status')).display,
+                                                 swatches: document.querySelectorAll('#curves button').length,
+                                                 enabled: document.querySelectorAll('#curves button:enabled').length,
+                                                 shown: window.__seen.shown.length,
+                                                 image: [...document.querySelectorAll('#stage image')].map(i => i.getAttribute('href')) }))
+        const said = got.text.match(/^Couldn't load (\S+) \((.+)\)$/)
+        if (!said || said[1] !== `img/venn-${nn(n)}.svg` || (body === null && said[2] !== '404')) problem(`n=${n}, ${what}: the error says "${got.text}"`)
+        if (got.status !== 'none') problem(`n=${n}, ${what}: the loading line is still shown (display ${got.status})`)
+        if (got.swatches !== n || got.enabled !== 0) problem(`n=${n}, ${what}: ${got.swatches} swatches, ${got.enabled} of them enabled`)
+        if (got.shown) problem(`n=${n}, ${what}: ${got.shown} drawings shown`)
+        if (String(got.image) !== `img/venn-${nn(n)}.png`) problem(`n=${n}, ${what}: the picture is ${got.image}, not the PNG`)
+      }
+      await page.unroute(`**/img/venn-${nn(n)}.svg`)
+      // The viewer's own failures, each with the real file: no Worker to be had, canvas.js not found, and the worker
+      // failing after the first drawing (an error event 100 ms after it). Each must show the error, saying what failed.
+      const failures = [
+        ['no Worker', 'no workers here', p => p.addInitScript(() => {
+          window.Worker = function () { throw new Error('no workers here') }
+        })],
+        ['canvas.js not found', 'canvas.js', p => p.route(/\/canvas\.js/, r => r.fulfill({ status: 404, body: '' }))],
+        ['a failure after the first drawing', 'a later failure', p => p.addInitScript(() => {
+          const W = window.Worker
+          window.Worker = class extends W {
+            constructor(...args) {
+              super(...args)
+              let seen = 0
+              this.addEventListener('message', () => {
+                seen += 1
+                if (seen === 1) setTimeout(() => this.dispatchEvent(new ErrorEvent('error', { message: 'a later failure' })), 100)
+              })
+            }
+          }
+        })],
+      ]
+      for (const [what, want, setup] of failures) {
+        const p = await sized(page, W, H, 1)
+        await setup(p)
+        await p.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
+        const text = await p.waitForSelector('#error', { state: 'visible', timeout: 60000 })
+          .then(() => p.locator('#error').textContent(), () => null)
+        if (!text?.startsWith(`Couldn't load img/venn-${nn(n)}.svg (`) || !text.includes(want))
+          problem(`n=${n}, ${what}: the error says ${JSON.stringify(text)}, not that it couldn't load img/venn-${nn(n)}.svg (${want}...)`)
+        await p.context().close()
+      }
+    }
+  },
+
+  async canvasFrames(page, problem) {
+    for (const n of CANVAS) {
+      const p = await sized(page, 2560, 1440, 2)
+      try {
+        await openCanvas(p, n)
+        const t0 = await now(p)
+        for (let i = 0; i < 3; i++) {
+          const t = await now(p)
+          await p.click('#in')
+          await drawnSince(p, t)
+        }
+        await p.waitForTimeout(1000)
+        const [at, longest] = await p.evaluate(t0 => {
+          const f = window.__seen.frames.filter(t => t > t0)
+          return f.slice(1).map((t, i) => [t, t - f[i]]).reduce((worst, gap) => gap[1] > worst[1] ? gap : worst, [0, 0])
+        }, t0)
+        if (longest > 100) problem(`n=${n}: a frame of ${longest.toFixed(0)} ms, ending ${(at - t0).toFixed(0)} ms after the first click`)
+      } finally {
+        await p.context().close()
+      }
+    }
+  },
+
+  async canvasBig(page, problem) {
+    const LIMIT = 20000                   // ms from opening to the first drawing (see qual_viewer_canvas_big)
+    for (const n of CANVAS) {
+      const { page: side } = await drawing(n)
+      const p = await sized(page, 2560, 1440, 2)
+      try {
+        await p.addInitScript(spy)
+        await p.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
+        await p.waitForSelector('#stage canvas', { state: 'attached', timeout: 5000 })
+        const first = await drawnSince(p, 0, LIMIT).then(() => p.evaluate(() => window.__seen.shown[0]), () => Infinity)
+        if (first > LIMIT) problem(`n=${n}: the first drawing took ${first.toFixed(0)} ms, over ${LIMIT}`)
+        await matches(p, n, fitted(await area(p), side), n - 1, `n=${n} at fit in 2560 by 1440, 2 device pixels to a CSS pixel`, problem)
+      } finally {
+        await p.context().close()
+      }
     }
   },
 }
