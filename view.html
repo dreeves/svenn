@@ -23,24 +23,28 @@
   #picture { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; pointer-events: none; }   /* see draw() */
   #stage svg { display: block; width: 100%; height: 100%; pointer-events: none; }   /* hit-testing 19's curves takes seconds */
   #stage path { vector-effect: non-scaling-stroke; stroke-width: var(--stroke); }
-  /* placed by canvasRenderer(); a layer of its own (will-change), so that placing it anew doesn't make WebKit paint its
+  /* placed by painter(); a layer of its own (will-change), so that placing it anew doesn't make WebKit paint its
      drawing anew (see canvas.js) */
   #stage canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
-  /* The controls: along the top, where you are (back arrow, number) and the tools (SVG link, zoom buttons); along the
-     bottom, the swatches, or in a landscape window a column of them along the right edge. At zoom 1 the drawing fits
-     in the space they leave (area()), so that none of them covers it. */
+  /* The shading (shade()), beneath the curves, though after them in the document: #stage's first SVG and first canvas
+     are the curves'. turn() turns it. */
+  #region { position: absolute; inset: 0; z-index: -1; }
+  /* The controls: along the top, where you are (back arrow, number) and the tools (SVG link, zoom buttons, turn button);
+     along the bottom, the swatches with their checkboxes, or in a landscape window a column of them along the right
+     edge. At zoom 1 the drawing fits in the space they leave (area()), so that none of them covers it. */
   /* Narrow screens get less space between and around them (clamp), so the top row fits 320 pixels; narrower still,
      it wraps, and area() makes room below it. */
   #top, #curves { position: fixed; left: clamp(0.5rem, 3vw, 1rem); right: clamp(0.5rem, 3vw, 1rem); pointer-events: none; }   /* drags between controls reach the drawing */
-  #top > *, #curves > * { pointer-events: auto; }
+  #top > *, .stop > * { pointer-events: auto; }
   #top { top: 1rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: clamp(0.3rem, 2vw, 0.7rem); }
   #where, #tools { display: flex; align-items: center; gap: clamp(0.25rem, 1.5vw, 0.5rem); }
   h1 { margin: 0; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); font-weight: 500; font-size: 2rem; line-height: 1; }
   #raw { margin-right: 0.3rem; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); line-height: 1; }
   #curves { bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; }
+  .stop { display: flex; flex-direction: column; align-items: center; }   /* a curve's swatch, its checkbox under it */
   @media (orientation: landscape) {   /* in vertical writing, a flex row wraps into columns that size right everywhere */
     #curves { top: 4.5rem; left: auto; writing-mode: vertical-rl; }
-    #curves button { writing-mode: horizontal-tb; }
+    .stop { writing-mode: horizontal-tb; flex-direction: row; }   /* the checkbox beside the swatch */
   }
   #curves button {
     width: 2rem;
@@ -55,6 +59,9 @@
   /* its curve is hidden: fade the fill, not the opacity, which would fade the focus ring too */
   #curves button[aria-pressed="false"] { background: color-mix(in srgb, var(--colour, var(--line)) 25%, var(--paper)); }
   #curves button:disabled { cursor: default; }
+  .stop label { display: grid; place-items: center; width: 2rem; height: 2rem; cursor: pointer; }   /* the checkbox's target */
+  .stop input { width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--ink); cursor: inherit; }
+  .stop label:has(:disabled) { cursor: default; }
   .icon {
     display: grid;
     place-items: center;
@@ -70,7 +77,7 @@
   @media (hover: hover) { .icon:hover { border-color: var(--ink); } }   /* on a touch screen a tap would leave it on */
   .icon svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   @media (any-pointer: coarse) {   /* a finger needs 44 pixels to aim at, Apple's guideline (touchscreen laptops too) */
-    #curves button, .icon { width: 2.75rem; height: 2.75rem; }
+    #curves button, .icon, .stop label { width: 2.75rem; height: 2.75rem; }
     #raw { display: grid; place-items: center; min-width: 2.75rem; height: 2.75rem; }
   }
   #status, #slow, #error {                  /* hung just below the top row, wherever it ends */
@@ -98,6 +105,8 @@
     <button id="in" class="icon" type="button" title="Zoom in"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M8 3v10"/></svg></button>
     <button id="out" class="icon" type="button" title="Zoom out"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
     <button id="fit" class="icon" type="button" title="Reset the zoom"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
+    <!-- TODO: the turn button's title: "Turn the drawing (and the shaded region with it) by 1/n of a full turn, anticlockwise" -->
+    <button id="turn" class="icon latin" type="button" title="Verte diagramma 1/n gyri" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.67 9.79A5 5 0 1 0 4.96 4.96L3.9 6M3.9 3v3h3"/></svg></button>
   </div>
   <p id="status" role="status">Loading full image…</p>
   <p id="slow" role="status" hidden>Apparently Firefox is bad at showing this smoothly while panning/zooming.</p>
@@ -113,12 +122,16 @@
 // the width they have when the drawing fits however far it's zoomed in, so close curves come apart. Until the SVG has
 // arrived, the card's PNG stands in for it. 23's drawing is too big for SVG paths, so it is drawn on a canvas instead
 // (canvasRenderer()); the rest is the same for every n.
+// The swatches are also the stops of a slider: drag along them, or press the arrow keys on one (slide()). Each has a
+// checkbox: the region inside the curves checked and outside the rest is shaded, by a worker for every n (shade(),
+// painter()), and the turn button turns the shading by 1/n of a full turn onto the region it lands on (turn()).
 const SVGNS = 'http://www.w3.org/2000/svg'
 const PAGE = 51200                     // the side of every drawing's square page, in SVG units (venn.py's PAGE)
 const ZOOM = [1 / 2, 1000]             // how far out and in it zooms, relative to the page just fitting
 const LINE = 16                        // pixels per line, for wheels that count in lines
 const SETTLE = 150                     // ms the view must keep still before the drawing is drawn anew (see draw())
 const SLOW = 250                       // ms a frame may take while the view moves before the note #slow shows
+const TURN = 600                       // ms the turn button takes to turn the shading (turn())
 const param = new URLSearchParams(location.search).get('n')
 const n = /^[1-9]\d?$/.test(param) ? Number(param) : NaN   // NaN loads nothing, and the error says venn-NaN
 const nn = String(n).padStart(2, '0')
@@ -131,6 +144,12 @@ let settle = null                      // the timer that draws it anew once the 
 let watching = false                   // whether watch() is timing frames, as it does while the view moves
 let lastFrame = null                   // when watch() last ran, or null if not since the drawing was drawn anew
 let stroke = 0                         // the drawing's stroke-width, in SVG units
+let shown = n - 1                      // the curves shown are 0 to shown
+let sliding = null                     // the pointer sliding along the swatches (slide()), while one is
+let lands = []                         // lands[i]: the curve curve i lands on in a turn (landing(), once loaded)
+const region = document.createElement('div')   // the shading (shade()), added to #picture after the curves
+region.id = 'region'
+region.setAttribute('aria-hidden', 'true')     // the checkboxes say what it shows
 
 document.title = `${n} · ${document.title}`
 document.getElementById('n').textContent = n
@@ -144,26 +163,93 @@ thumb.addEventListener('error', () => thumb.remove())   // no PNG either: leave 
 svg.append(thumb)
 picture.append(svg)
 
-const swatches = Array.from({ length: n }, (_, i) => {
-  const b = document.createElement('button')
+// Each curve's stop (.stop): its swatch, and its checkbox, in a label that makes a larger target
+const stops = Array.from({ length: n }, (_, i) => {
+  const stop = document.createElement('div'), b = document.createElement('button')
+  const label = document.createElement('label'), check = document.createElement('input')
   b.type = 'button'
   b.disabled = true
   b.title = `Curve ${i + 1}`
   b.setAttribute('aria-pressed', 'true')
   b.addEventListener('click', () => show(i))
-  document.getElementById('curves').append(b)
-  return b
+  b.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return         // only the main button slides, as only it drags the drawing
+    sliding = e.pointerId
+    show(i)
+  })
+  check.type = 'checkbox'
+  check.disabled = true
+  // TODO: checkbox i's name, and its target's tooltip, "Inside curve i + 1": checked, the shaded region is inside that
+  // curve; unchecked, outside it
+  label.title = check.ariaLabel = `Intra curvam ${i + 1}`
+  check.addEventListener('change', shade)
+  stop.className = 'stop'
+  label.append(check)
+  stop.append(b, label)
+  document.getElementById('curves').append(stop)
+  return { b, check }
 })
+const swatches = stops.map(s => s.b), checks = stops.map(s => s.check)
 
 // What differs between drawing as SVG paths and on a canvas: how the drawing is loaded, how curves are shown and
-// hidden, and what redraw() does besides setting the SVG's viewBox
+// hidden, and what the worker draws besides the shading (painter())
 const renderer = n === 23 ? canvasRenderer() : svgRenderer()
+picture.append(region)
 
 // Show curves 0 to k and hide the rest, marking the swatches of the curves shown as pressed
 function show(k) {
+  shown = k
   renderer.show(k)
   swatches.forEach((b, j) => b.setAttribute('aria-pressed', String(j <= k)))
 }
+
+// The swatches as a slider's stops: a press on one shows the curves up to it, and as it moves along them (pointermove,
+// below), up to the one nearest the pointer
+function nearest(x, y) {
+  const d = swatches.map(b => {
+    const r = b.getBoundingClientRect()
+    return Math.hypot(r.left + r.width / 2 - x, r.top + r.height / 2 - y)
+  })
+  return d.indexOf(Math.min(...d))
+}
+// and a key on a swatch moves it d stops, as far as it goes, the focus following
+function slide(d) {
+  show(Math.min(Math.max(shown + d, 0), n - 1))
+  swatches[shown].focus()
+}
+
+// Shade the region inside every curve checked and outside every other (the renderer's shade() draws it), returning
+// when that's drawn
+function shade() {
+  return renderer.shade(checks.map(c => c.checked))
+}
+
+// The curve each curve lands on when the drawing turns by 1/n of a full turn anticlockwise: -360/n degrees in the
+// file's terms (SVG's rotate(), clockwise on screen). Curve i is curve 0 turned by angles[i] degrees, so it lands on
+// the curve turned by angles[i] - 360/n, to within the angles' rounding; anything else is an error in the file.
+function landing(angles) {
+  const gap = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180)
+  const to = angles.map(a => angles.findIndex(b => gap(b, a - 360 / n) < 1e-6))
+  if (String([...to].sort((a, b) => a - b)) !== String([...to.keys()])) throw new Error(`turned by ${angles} degrees, curves land on ${to}`)
+  return to
+}
+
+// Turn the shading by 1/n of a full turn anticlockwise about the page's centre (#region's transform-origin, which
+// redraw() keeps there) over TURN ms; then check the boxes of the curves the checked ones land on, which shades the
+// region the turned shading covers, and once that's drawn, drop the turn. Meanwhile the button is disabled.
+async function turn() {
+  const button = document.getElementById('turn')
+  button.disabled = true
+  const spin = region.animate([{ transform: 'rotate(0deg)' }, { transform: `rotate(${-360 / n}deg)` }],
+                              { duration: TURN, easing: 'ease-in-out', fill: 'forwards' })
+  await spin.finished
+  const was = checks.map(c => c.checked)
+  lands.forEach((j, i) => { checks[j].checked = was[i] })
+  await shade()
+  spin.cancel()
+  button.disabled = false
+}
+document.getElementById('turn').addEventListener('click', turn)
 
 // Where the page goes at zoom 1: the square that fits below the controls along the top and clear of the swatches (a
 // row along the bottom, or, as the CSS puts them in a landscape window, a column along the right edge), centred there;
@@ -213,6 +299,7 @@ function redraw() {
   svg.setAttribute('viewBox', `${view.cx - a.x * s} ${view.cy - a.y * s} ${stage.clientWidth * s} ${stage.clientHeight * s}`)
   svg.style.setProperty('--stroke', `${stroke * a.side / PAGE}px`)
   picture.style.transform = 'translate(0px, 0px) scale(1)'   // the identity: from none, WebKit's next gesture stalls
+  region.style.transformOrigin = `${a.x + (PAGE / 2 - view.cx) / s}px ${a.y + (PAGE / 2 - view.cy) / s}px`   // the page's centre
   drawn = view
   renderer.redraw()
 }
@@ -248,6 +335,7 @@ function spread() {                    // the held pointers' centroid, and their
 function release(id) {
   held.delete(id)
   stage.classList.toggle('held', held.size > 0)
+  sliding = null
 }
 stage.addEventListener('pointerdown', e => {
   if (e.button !== 0) return           // only the main button drags (a finger and a pen's tip count as it)
@@ -256,6 +344,7 @@ stage.addEventListener('pointerdown', e => {
 })
 addEventListener('pointermove', e => {
   if (!e.buttons) release(e.pointerId) // nothing pressed, so its release went missing (after a context menu, say)
+  if (e.pointerId === sliding) show(nearest(e.clientX, e.clientY))
   if (!held.has(e.pointerId)) return   // a pointer passing over, not pressed on the drawing
   const [x0, y0, d0] = spread()
   held.set(e.pointerId, [e.clientX, e.clientY])
@@ -294,9 +383,12 @@ const KEYS = {
   ArrowUp: () => pan(0, step()), ArrowDown: () => pan(0, -step()),
   Escape: () => show(n - 1),
 }
+// On a swatch, the arrow keys move the slider (slide()) instead
+const SLIDE = { ArrowRight: () => slide(1), ArrowDown: () => slide(1), ArrowLeft: () => slide(-1), ArrowUp: () => slide(-1),
+                Home: () => slide(-n), End: () => slide(n) }
 addEventListener('keydown', e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return   // the browser's own shortcuts, like cmd+0
-  KEYS[e.key]?.()
+  ;({ ...KEYS, ...swatches.includes(e.target) && SLIDE })[e.key]?.()
 })
 addEventListener('resize', redraw)   // the picture last drawn was for the old window
 // and for the old devicePixelRatio, which can change with no resize (the window moved to another screen)
@@ -311,7 +403,7 @@ resolution()
 // The file holds curve 0 once and draws curve i as a <use> of it rotated about the page centre (venn.py's write_svg()):
 // 1/n of the bytes to download. Each curve becomes a path of its own here, its points rotated: Firefox drew 19's
 // rotated uses about 1.5 times slower than these paths (other browsers drew them about as fast), and the quals see
-// one path per curve.
+// one path per curve. Returns the paths and the angles their uses turn curve 0 by.
 function curves(text) {
   const src = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement
   const curve = src.querySelector('path'), uses = [...src.querySelectorAll('use')]
@@ -320,8 +412,9 @@ function curves(text) {
                (xy.length / 2 - 1) % 3, uses.length, ...uses.map(u => `${u.id} ${u.getAttribute('href')}`)]
   const want = [`0 0 ${PAGE} ${PAGE}`, 1, 'MCZ', 0, n, ...uses.map((_, i) => `curve-${i} #curve`)]
   if (String(got) !== String(want)) throw new Error(`${got} ≠ ${want}`)   // viewBox, paths, commands, spans, uses
-  return uses.map(u => {
-    const [deg, cx, cy] = u.getAttribute('transform').match(/^rotate\(([-\d.e]+) ([\d.]+) ([\d.]+)\)$/).slice(1).map(Number)
+  const turns = uses.map(u => u.getAttribute('transform').match(/^rotate\(([-\d.e]+) ([\d.]+) ([\d.]+)\)$/).slice(1).map(Number))
+  return { angles: turns.map(t => t[0]), paths: uses.map((u, j) => {
+    const [deg, cx, cy] = turns[j]
     const c = Math.cos(deg * Math.PI / 180), s = Math.sin(deg * Math.PI / 180), pts = []
     for (let i = 0; i < xy.length; i += 2) {
       const x = xy[i] - cx, y = xy[i + 1] - cy
@@ -333,44 +426,70 @@ function curves(text) {
     for (const k of ['id', 'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin']) p.setAttribute(k, u.getAttribute(k))
     p.setAttribute('d', `M${pts[0]} ${spans.join(' ')} Z`)
     return p
-  })
+  }) }
 }
 
-// The curves as SVG paths, which the browser draws anew whenever redraw() sets the SVG's viewBox
+// The curves as SVG paths, which the browser draws anew whenever redraw() sets the SVG's viewBox; the worker draws the
+// shading alone (painter(-1)). Loaded once both the paths and the worker's first drawing are.
 function svgRenderer() {
+  const paint = painter(-1)
   return {
     show: k => svg.querySelectorAll('path').forEach((p, j) => { p.style.display = j <= k ? '' : 'none' }),
-    redraw() {},
-    load: () => fetch(file)
+    redraw: paint.redraw,
+    shade: paint.shade,
+    load: () => Promise.all([fetch(file)
       .then(r => r.ok ? r.text() : Promise.reject(new Error(r.status)))   // just the status: HTTP/2 has no status text
       .then(text => {
-        const paths = curves(text)
+        const { paths, angles } = curves(text)
         stroke = Number(paths[0].getAttribute('stroke-width'))
         svg.replaceChildren(...paths)
         redraw()
-        return paths.map(p => p.getAttribute('stroke'))
-      }),
+        return { colours: paths.map(p => p.getAttribute('stroke')), angles }
+      }), paint.first]).then(([loaded]) => loaded),
   }
 }
 
-// The curves on a canvas, for 23, whose curves have 729,449 spans each, too many for SVG paths. A worker, canvas.js,
-// loads the file and draws each view redraw() asks for on a canvas of its own, then posts back the drawing, an
-// ImageBitmap, for the canvas here to show. Until a new drawing arrives the one before stays, placed by place() where
-// the view last drawn shows it, so that the picture's transform moves it as it moves the SVG (which holds the stand-in
-// PNG until the first drawing). The first drawing comes once the worker has loaded the file; if it can't, an error.
+// The curves on a canvas, for 23, whose curves have 729,449 spans each, too many for SVG paths: the worker draws curves
+// 0 to k as well as the shading. Its first drawing replaces the stand-in PNG.
 function canvasRenderer() {
+  const paint = painter(n - 1)
+  return {
+    show(i) {
+      paint.k = i
+      redraw()
+    },
+    redraw: paint.redraw,
+    shade: paint.shade,
+    load: () => paint.first.then(data => {
+      thumb.remove()
+      return data
+    }),
+  }
+}
+
+// The worker, canvas.js, which loads the file itself and draws each view redraw() asks for: curves 0 to k (none, for
+// k = -1) on a canvas of its own, and the shading on another, then posts back the drawings, ImageBitmaps, for the
+// canvases here to show, one in #picture (after the SVG) and one in #region. Until new drawings arrive the ones before
+// stay, placed by place() where the view last drawn shows them, so that the picture's transform moves them as it moves
+// the SVG. The first drawing comes once the worker has loaded the file; if it can't, an error. shade() returns when the
+// shading it asks for is shown.
+function painter(k) {
   const canvas = document.createElement('canvas'), bitmap = canvas.getContext('bitmaprenderer')
+  const shading = document.createElement('canvas'), shaded = shading.getContext('bitmaprenderer')
   let worker = null                      // made in first's executor, so that a browser that can't make one rejects it
-  let k = n - 1                          // curves 0 to k are shown
-  let at = { x: 0, y: 0, s: 1 }          // the canvas's drawing: page point (x, y) at its top left, s page units to a
-                                         // CSS pixel (any, until there is a drawing)
+  let inside = checks.map(c => c.checked)   // inside[i]: whether the shading is inside curve i, or outside it
+  let asked = 0                          // the number of the last view asked for
+  let waiting = []                       // [view number, resolve] for each shade() until that view, or a later one, is shown
+  let at = { x: 0, y: 0, s: 1 }          // the canvases' drawings: page point (x, y) at their top left, s page units to
+                                         // a CSS pixel (any, until there is a drawing)
   canvas.setAttribute('aria-hidden', 'true')   // the SVG is the image to a screen reader
   picture.append(canvas)
-  function place() {                     // the canvas's drawing where the view last drawn, drawn, shows it
+  region.append(shading)
+  function place() {                     // the canvases' drawings where the view last drawn, drawn, shows them
     const a = area(), s = scale(a, drawn.z), x = drawn.cx - a.x * s, y = drawn.cy - a.y * s
-    canvas.style.transform = `translate(${(at.x - x) / s}px, ${(at.y - y) / s}px) scale(${at.s / s})`
+    for (const c of [canvas, shading]) c.style.transform = `translate(${(at.x - x) / s}px, ${(at.y - y) / s}px) scale(${at.s / s})`
   }
-  const first = new Promise((ok, fail) => {   // the first drawing shown, giving the curves' colours
+  const first = new Promise((ok, fail) => {   // the first drawing shown, giving the curves' colours and angles
     worker = new Worker(`canvas.js?${new URLSearchParams({ file, n })}`)
     // an error, before the first drawing or after it, shows the error (a worker's own error event, as when canvas.js
     // itself can't be loaded, has no message to speak of, so it says where it came from)
@@ -381,30 +500,37 @@ function canvasRenderer() {
     worker.addEventListener('error', e => broke(new Error(`canvas.js: ${e.message}`)))
     worker.addEventListener('message', ({ data }) => {
       if ('error' in data) return broke(new Error(data.error))
-      canvas.width = data.bitmap.width
-      canvas.height = data.bitmap.height
-      canvas.style.width = `${data.bitmap.width / data.r}px`
-      canvas.style.height = `${data.bitmap.height / data.r}px`
-      bitmap.transferFromImageBitmap(data.bitmap)
-      thumb.remove()
+      for (const [c, context, b, r] of [[canvas, bitmap, data.bitmap, data.r], [shading, shaded, data.shading, data.rs]]) {
+        c.width = b.width
+        c.height = b.height
+        c.style.width = `${b.width / r}px`
+        c.style.height = `${b.height / r}px`
+        context.transferFromImageBitmap(b)
+      }
       at = data.at
       place()
-      ok(data.colours)
+      for (const [seq, done] of waiting) if (seq <= data.seq) done()
+      waiting = waiting.filter(([seq]) => seq > data.seq)
+      ok(data)
     })
   })
-  return {
-    show(i) {
-      k = i
-      redraw()
-    },
+  const p = {
+    k,
+    first,
     redraw() {
       const a = area(), s = scale(a, view.z)
       place()
       worker.postMessage({ x: view.cx - a.x * s, y: view.cy - a.y * s, s, fit: scale(a, 1), w: stage.clientWidth,
-                           h: stage.clientHeight, dpr: devicePixelRatio, k })
+                           h: stage.clientHeight, dpr: devicePixelRatio, k: p.k, inside, seq: ++asked,
+                           colour: getComputedStyle(document.documentElement).getPropertyValue('--line').trim() })
     },
-    load: () => first,
+    shade(i) {
+      inside = i
+      redraw()
+      return new Promise(done => waiting.push([asked, done]))
+    },
   }
+  return p
 }
 
 // The error shown when the drawing can't be loaded (or, on a canvas, drawn)
@@ -416,10 +542,14 @@ function failed(e) {
 
 const status = document.getElementById('status')
 renderer.load()
-  .then(colours => swatches.forEach((b, i) => {
-    b.style.setProperty('--colour', colours[i])
-    b.disabled = false
-  }))
+  .then(({ colours, angles }) => {
+    lands = landing(angles)
+    swatches.forEach((b, i) => {
+      b.style.setProperty('--colour', colours[i])
+      b.disabled = false
+    })
+    for (const c of [...checks, document.getElementById('turn')]) c.disabled = false
+  })
   .catch(failed)
   .finally(() => { status.hidden = true })
 redraw()

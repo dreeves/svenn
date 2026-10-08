@@ -32,6 +32,24 @@ Jargon, defined once here and used throughout:
          summed difference of their colours, each weighted by its alpha,
          after scaling the canvas's alpha to the reference's total), and its
          total ink (alpha) is within a fifth of the reference's.
+  shading  the region of the drawing that view.html shades, in site.css's
+         --line colour, beneath the curves: the one inside every curve whose
+         checkbox is checked and outside every other, i.e. the region whose
+         label has bit i set iff checkbox i is checked (with none checked,
+         the region outside every curve).
+  probe  for a browser qual of the shading, a point of the drawing's page
+         at least 5 pixels on screen from every curve of img/venn-NN.svg,
+         whose label the qual finds itself from the file: the point is
+         inside curve i iff, turned back by the angle of use i, it is inside
+         curve 0, iff a ray from it crosses curve 0 an odd number of times.
+         A probe is shaded when a screenshot shows it in --line, unshaded
+         when it shows it in --paper (each channel within 8).
+  turn   (as in venn.py) a rotation about the page's centre. The turn
+         button turns the drawing by 1/n of a full turn anticlockwise on
+         screen: -360/n degrees in SVG's rotate(), whose positive angles turn
+         clockwise on screen. That carries curve i, which use i turns by a_i
+         degrees, onto the curve j whose a_j is a_i - 360/n (mod 360): curve
+         i lands on curve j.
 """
 import html
 import html.parser
@@ -1263,6 +1281,74 @@ def qual_viewer_phone():
 
 
 @qual
+def qual_viewer_shading():
+    """Replicata: open view.html?n=3 and view.html?n=7 in Chromium, WebKit and Firefox, in a 1200 by 800 window; check
+    the checkboxes of one set of curves after another: at n = 3 every set, from none to all three; at n = 7 none, {0},
+    {1, 2}, {0, 2, 4}, all but curve 6, and all seven. Each time, once the drawing of the shading has arrived (a worker
+    draws it, for every n), take a screenshot and look at the probes it shows outside the controls. Expectata: exactly
+    the probes of the checked set's label are shaded and every other probe is unshaded: the shading is the region
+    inside every checked curve and outside every other, beneath the curves, and with nothing checked it is the region
+    outside every curve. (Each set's label has probes in view, or the qual fails.)"""
+    return browser('shading')
+
+
+@qual
+def qual_viewer_checks():
+    """Replicata: open view.html?n=7 in a 1200 by 800 window while img/venn-07.svg is slow to arrive, then let it
+    arrive; click curve 0's checkbox, then curve 3's; focus curve 0's and press Space. Open it in a 600 by 800 window,
+    and on a phone with a touch screen, 375 by 667, where tap curve 6's checkbox twice. Expectata: one checkbox per
+    curve, all unchecked on opening and disabled until the drawing has arrived, as the swatches are; checkbox i under
+    swatch i and centred on it (beside it, to its right, where the swatches stand in a column, as in the 1200 by 800
+    window); each with an accessible name, a different one, holding i + 1 (as swatch i's title, "Curve i + 1", does).
+    Each click, Space and tap toggles its checkbox, and the shading follows: once its drawing has arrived, exactly the
+    probes of the checked set's label are shaded (as in qual_viewer_shading). On the touch screen each checkbox's
+    target (it and its label) is at least 44 by 44 pixels, Apple's guideline, as in qual_viewer_phone."""
+    return browser('checks')
+
+
+@qual
+def qual_viewer_slider():
+    """Replicata: in view.html?n=7, press on the first swatch and drag along the swatches to the fifth, a swatch at a
+    time, then on past the last; press on the third and drag back past the first; with a finger on a touch screen,
+    drag from the second swatch to the fourth; then focus the fourth swatch and press →, ↓, ←, ↑, ↑, Home and End.
+    Expectata: the swatches are the stops of a slider. While a press that began on a swatch moves, the curves shown
+    are those up to and including the swatch nearest the pointer (curves 0 to k for swatch k, counting from 0, as in
+    qual_viewer_curves), with exactly their swatches pressed; past an end, that end's swatch. A key moves it a stop:
+    → and ↓ forward, ← and ↑ back, Home to the first and End to the last, and the focus goes to the swatch of the last
+    curve shown; while a swatch has the focus, the arrow keys don't pan the drawing. Nothing here moves the drawing."""
+    return browser('slider')
+
+
+@qual
+def qual_viewer_turn():
+    """Replicata: open view.html?n=3 and view.html?n=7; check {0} at n = 3 and {0, 2} at n = 7, and click the turn
+    button (↺); once it has turned, click it again; then check every curve and click it once more. Expectata: the
+    button turns the shading 1/n of a full turn anticlockwise about the page's centre, animated (the element #region,
+    which holds the shading and nothing else, turned about the page's centre by angles from 0 to -360/n degrees, at
+    least one strictly between), while the curves stay as they are, and meanwhile the button is disabled. Once it has
+    turned, the checkboxes checked are those of the curves the checked ones land on (see turn, above), found from the
+    file's angles: at n = 7, whose use i turns curve 0 by -360i/7 degrees, curve i lands on curve i + 1 (mod 7), so
+    {0, 2} becomes {1, 3} and then {2, 4}; at n = 3, whose use i turns it by 120i, curve i lands on curve i - 1
+    (mod 3), so {0} becomes {2} and then {1}. The shading stays turned until the drawing for the new set has arrived;
+    then exactly the probes of the new set's label are shaded, #region's transform is the identity again, the button is
+    enabled, and the curves are as they were (each path's data and colour unchanged). With every curve checked, the
+    turn changes nothing: every curve lands on a curve."""
+    return browser('turn')
+
+
+@qual
+def qual_viewer_follow():
+    """Replicata: in view.html?n=7, check curves 0 and 2; from a probe of the region they shade, drag the drawing, then
+    turn the wheel and pinch where the drag left it, as in qual_viewer_settle (a move every 16 ms), and wait; then
+    double-click there. Expectata: at every event the shading moves with the curves: the canvas it is drawn on, in
+    #picture, is moved by #picture's transform as the curves are (its box on the screen within half a pixel of where
+    that transform puts the box it had); and once the curves are drawn anew, until the shading drawn anew arrives, the
+    old one stays where the gestures left it (within half a pixel). Then, after the gestures and after the
+    double-click, exactly the probes of label 5 (curves 0 and 2) are shaded, wherever the new view puts them."""
+    return browser('follow')
+
+
+@qual
 def qual_viewer_canvas_fit():
     """Replicata: open view.html?n=23 (each n in CANVAS, which the viewer draws on a canvas) in Chromium, WebKit and
     Firefox, in a 1200 by 800 window; turn the wheel to zoom in by 4 about a point on curve 0, then by 16 more about
@@ -1356,6 +1442,31 @@ def qual_viewer_canvas_big():
     device pixel fall off the browsers' fast path for thin lines: with a pixel for each device pixel, this first
     drawing took 12.5 s in Chromium, 30 in Firefox, and 62 in WebKit, which then showed nothing."""
     return browser('canvasBig')
+
+
+@qual
+def qual_viewer_canvas_shading():
+    """Replicata: open view.html?n=23 (each n in CANVAS) in a 1200 by 800 window and wait for its drawing; with
+    nothing checked, take a screenshot at fit; check all 23 curves and take another; zoom in by 64 about a point P on
+    curve 0, as in qual_viewer_canvas_fit, check the curves of the label most of the probes there have, and take
+    another; drag the drawing 100 pixels left, and take another. Expectata: once each drawing has arrived, exactly the
+    probes of the checked set's label are shaded, as in qual_viewer_shading (at fit, with nothing checked, the region
+    outside every curve; with all checked, the one inside them all, about the page's centre; then the region checked
+    about P, before and after the drag), at the places the qual's own arithmetic gives the probes; and the canvas of
+    the curves, the first in #stage, still matches its reference: the shading is on a canvas of its own, beneath."""
+    return browser('canvasShading')
+
+
+@qual
+def qual_viewer_canvas_turn():
+    """Replicata: open view.html?n=23 and zoom in by 64 about a point P on curve 0, as in qual_viewer_canvas_fit; check
+    the curves of the label most of the probes there have, and click the turn button; once it has turned, drag the
+    drawing so that the point P turned by -360/23 degrees about the page's centre is where P was. Expectata: the
+    button turns the shading as in qual_viewer_turn, and it stays turned until the drawing for the new set has arrived;
+    then the checkboxes checked are those of the curves the checked ones land on: curve i lands on curve i + 1
+    (mod 23), since use i turns curve 0 by -360i/23 degrees; exactly the probes of the new set's label are shaded, at
+    the places the qual's own arithmetic gives them; and the canvas of the curves matches its reference."""
+    return browser('canvasTurn')
 
 
 @qual

@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium, firefox, webkit } from 'playwright'
@@ -228,6 +229,226 @@ async function source(n) {
   return { text, knots: [[xy[0], xy[1]], [xy[6], xy[7]]], colours: [...text.matchAll(/ stroke="(#[0-9a-f]{6})"/g)].map(m => m[1]) }
 }
 const rgb = hex => `rgb(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(', ')})`
+
+// ---- The shading (quals.py: shading, probe, turn). Its checks look at screenshots, at probes: points of the page at
+// least FAR pixels on screen from every curve, whose labels (bit i set iff the point is inside curve i) they find from
+// the drawing's file themselves.
+
+const FAR = 5                         // pixels on screen from every curve, at least, for a probe
+const GRID = 10                       // pixels between the points tried as probes, across and down the window
+const site = await readFile(path.join(ROOT, 'site.css'), 'utf8')
+const hex = name => site.match(new RegExp(`--${name}: #([0-9a-f]{6});`))[1].match(/../g).map(h => parseInt(h, 16))
+const SHADED = hex('line'), UNSHADED = hex('paper')   // a probe's colour, shaded or not
+const curvesIn = L => `{${[...Array(31).keys()].filter(i => L >> i & 1).join(', ')}}`   // label L's curves, "{0, 2}"
+
+// The pixels of a PNG with 8 bits a channel, RGB or RGBA, not interlaced, as Playwright's screenshots are: its width
+// and height, and the RGBA of its pixels, row by row
+function png(b) {
+  const chunks = []
+  for (let i = 8; i < b.length; i += 12 + b.readUInt32BE(i)) chunks.push([b.toString('latin1', i + 4, i + 8), b.subarray(i + 8, i + 8 + b.readUInt32BE(i))])
+  const head = chunks[0][1], w = head.readUInt32BE(0), h = head.readUInt32BE(4)
+  assert(chunks[0][0] === 'IHDR' && head[8] === 8 && [2, 6].includes(head[9]) && head[12] === 0,
+         `a PNG with ${chunks[0][0]} first, bit depth ${head[8]}, colour type ${head[9]}, interlace ${head[12]}`)
+  const bpp = head[9] === 6 ? 4 : 3, stride = w * bpp
+  const raw = zlib.inflateSync(Buffer.concat(chunks.filter(([k]) => k === 'IDAT').map(([, data]) => data)))
+  const rgba = new Uint8Array(4 * w * h), line = new Uint8Array(stride), up = new Uint8Array(stride)
+  for (let y = 0; y < h; y++) {
+    const filter = raw[y * (stride + 1)], row = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1))
+    for (let x = 0; x < stride; x++) {
+      const a = x < bpp ? 0 : line[x - bpp], b = up[x], c = x < bpp ? 0 : up[x - bpp], p = a + b - c
+      const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c
+      line[x] = row[x] + [0, a, b, (a + b) >> 1, paeth][filter]
+    }
+    for (let x = 0; x < w; x++) for (let k = 0; k < 4; k++) rgba[4 * (y * w + x) + k] = k < bpp ? line[bpp * x + k] : 255
+    up.set(line)
+  }
+  return { w, h, rgba }
+}
+
+// Drawing n as its file gives it: the side of its page; curve 0's points xy (its start, then three a span); the angles
+// its uses turn it by (degrees, clockwise on screen, as in SVG's rotate()); and, for label(), a tree of boxes over runs
+// of curve 0's spans: node k covers spans lo[k] to hi[k] - 1, whose control points lie in the box boxes[4k] to
+// boxes[4k + 3] (x0, y0, x1, y1), and its children are nodes kids[2k] and kids[2k + 1], or -1 for a single span. Read
+// once a run (23's file is 56 MB).
+const shapes = new Map()
+function shape(n) {
+  if (!shapes.has(n)) shapes.set(n, readFile(path.join(ROOT, 'img', `venn-${nn(n)}.svg`), 'utf8').then(text => {
+    const d = text.indexOf(' d="M') + 4
+    const xy = Float64Array.from(text.slice(d, text.indexOf('"', d)).matchAll(/-?\d+(?:\.\d+)?/g), m => Number(m[0]))
+    const spans = (xy.length - 2) / 6, nodes = 2 * spans - 1
+    const lo = new Int32Array(nodes), hi = new Int32Array(nodes), kids = new Int32Array(2 * nodes).fill(-1)
+    const boxes = new Float64Array(4 * nodes)
+    let next = 0
+    const build = (a, b) => {
+      const k = next++
+      lo[k] = a
+      hi[k] = b
+      if (b - a === 1) {
+        const c = xy.subarray(6 * a, 6 * a + 8)
+        boxes.set([Math.min(c[0], c[2], c[4], c[6]), Math.min(c[1], c[3], c[5], c[7]),
+                   Math.max(c[0], c[2], c[4], c[6]), Math.max(c[1], c[3], c[5], c[7])], 4 * k)
+      } else {
+        const l = build(a, (a + b) >> 1), r = build((a + b) >> 1, b)
+        kids.set([l, r], 2 * k)
+        for (let j = 0; j < 4; j++) boxes[4 * k + j] = (j < 2 ? Math.min : Math.max)(boxes[4 * l + j], boxes[4 * r + j])
+      }
+      return k
+    }
+    build(0, spans)
+    return { side: Number(text.match(/viewBox="0 0 ([\d.]+) /)[1]), xy, lo, hi, kids, boxes,
+             angles: [...text.matchAll(/ transform="rotate\(([^ ]+) /g)].map(m => Number(m[1])) }
+  }))
+  return shapes.get(n)
+}
+
+// A cubic span of curve 0, or a piece of one, control points c: the parity of its crossings of the ray from (qx, qy)
+// towards +x, or -1 if it comes within far of that point. Halved until each half is either clear of the point (its
+// box, widened by far, misses it) or small (under far / 4 across) and near it. A piece clear of the point crosses the
+// ray as often as it goes from one side of height qy to the other if it lies wholly to the right of the point (an
+// odd number of times iff its ends lie on either side), and never otherwise.
+function piece(c, qx, qy, far, depth) {
+  const x0 = Math.min(c[0], c[2], c[4], c[6]), x1 = Math.max(c[0], c[2], c[4], c[6])
+  const y0 = Math.min(c[1], c[3], c[5], c[7]), y1 = Math.max(c[1], c[3], c[5], c[7])
+  if (qx < x0 - far || qy < y0 - far || qx > x1 + far || qy > y1 + far) return Number(x0 > qx && (c[1] > qy) !== (c[7] > qy))
+  if (Math.max(x1 - x0, y1 - y0) < far / 4) return -1
+  assert(depth < 60, `a span of curve 0 halved 60 times near (${qx}, ${qy})`)
+  const h = (i, j) => (c[i] + c[j]) / 2, [x01, y01, x12, y12, x23, y23] = [h(0, 2), h(1, 3), h(2, 4), h(3, 5), h(4, 6), h(5, 7)]
+  const xa = (x01 + x12) / 2, ya = (y01 + y12) / 2, xb = (x12 + x23) / 2, yb = (y12 + y23) / 2, xm = (xa + xb) / 2, ym = (ya + yb) / 2
+  const p = piece([c[0], c[1], x01, y01, xa, ya, xm, ym], qx, qy, far, depth + 1)
+  const q = piece([xm, ym, xb, yb, x23, y23, c[6], c[7]], qx, qy, far, depth + 1)
+  return p < 0 || q < 0 ? -1 : p ^ q
+}
+
+// The label of page point (x, y) in drawing sh, or -1 if some curve comes within far page units of it. The point is
+// inside curve i iff, turned back by use i's angle about the page's centre, it is inside curve 0: iff a ray from it
+// crosses curve 0 an odd number of times. A run of spans whose box, widened by far, misses the point settles that as a
+// piece does (piece()), its ends the run's ends; any other is split, down to single spans, then halved.
+function label({ side, xy, lo, hi, kids, boxes, angles }, x, y, far) {
+  let L = 0
+  for (let i = 0; i < angles.length; i++) {
+    const a = -angles[i] * Math.PI / 180, cos = Math.cos(a), sin = Math.sin(a), mid = side / 2
+    const qx = mid + (x - mid) * cos - (y - mid) * sin, qy = mid + (x - mid) * sin + (y - mid) * cos
+    let odd = 0
+    for (const stack = [0]; stack.length;) {
+      const k = stack.pop(), b = 4 * k
+      if (qx < boxes[b] - far || qy < boxes[b + 1] - far || qx > boxes[b + 2] + far || qy > boxes[b + 3] + far)
+        odd ^= boxes[b] > qx && (xy[6 * lo[k] + 1] > qy) !== (xy[6 * hi[k] + 1] > qy)
+      else if (kids[2 * k] >= 0) stack.push(kids[2 * k], kids[2 * k + 1])
+      else {
+        const p = piece(xy.subarray(6 * lo[k], 6 * lo[k] + 8), qx, qy, far, 0)
+        if (p < 0) return -1
+        odd ^= p
+      }
+    }
+    L |= odd << i
+  }
+  return L
+}
+
+// The probes of drawing n at mapping m (page point (m.x, m.y) at the window's top left, m.s page units to a CSS
+// pixel): the pixels of a GRID-pixel grid whose centres are at least FAR pixels from every curve, and where the stage
+// takes the pointer, not a control, there and 6 pixels away every way (beyond a control's shadow or focus ring), with
+// their labels
+async function probes(page, n, m) {
+  const sh = await shape(n)
+  const pixels = await page.evaluate(g => {
+    const out = [], clear = (x, y) => [-6, 0, 6].every(dx => [-6, 0, 6].every(dy => document.elementFromPoint(x + dx, y + dy)?.id === 'stage'))
+    for (let y = g >> 1; y < innerHeight; y += g) for (let x = g >> 1; x < innerWidth; x += g) if (clear(x + 0.5, y + 0.5)) out.push([x, y])
+    return out
+  }, GRID)
+  return pixels.flatMap(([x, y]) => {
+    const L = label(sh, m.x + (x + 0.5) * m.s, m.y + (y + 0.5) * m.s, FAR * m.s)
+    return L < 0 ? [] : [{ x, y, label: L }]
+  })
+}
+const commonest = ps => [...Map.groupBy(ps, p => p.label)].reduce((a, b) => b[1].length > a[1].length ? b : a)[0]
+
+// Expect a screenshot to show exactly the probes ps of label want shaded, and every other unshaded (and some of
+// want's to be among them)
+async function shows(page, ps, want, what, problem) {
+  const { w, h, rgba } = png(await page.screenshot())
+  const size = await page.evaluate(() => [innerWidth, innerHeight])
+  if (String([w, h]) !== String(size)) problem(`${what}: a screenshot of ${w} by ${h} pixels for a window of ${size}`)
+  const colour = ({ x, y }) => [...rgba.subarray(4 * (y * w + x), 4 * (y * w + x) + 3)]
+  const wrong = ps.filter(p => colour(p).some((v, i) => Math.abs(v - (p.label === want ? SHADED : UNSHADED)[i]) > 8))
+  const of = ps.filter(p => p.label === want).length
+  if (!of) problem(`${what}: none of the ${ps.length} probes in view has label ${want}`)
+  if (wrong.length) problem(`${what}: ${wrong.length} of ${ps.length} probes wrong (${of} of label ${want}, to be shaded), e.g. ` +
+                            wrong.slice(0, 3).map(p => `(${p.x}, ${p.y}), label ${p.label}: rgb(${colour(p)})`).join('; '))
+}
+
+// The mapping the SVG's curves are drawn at, from their screen CTM
+const mapping = async page => {
+  const m = await ctm(page)
+  return { s: 1 / m.a, x: -m.e / m.a, y: -m.f / m.d }
+}
+const checkboxes = page => page.locator('#curves input[type=checkbox]')
+// The label of the curves checked
+const checked = page => page.evaluate(() => [...document.querySelectorAll('#curves input[type=checkbox]')].reduce((L, c, i) => L | c.checked << i, 0))
+// Check exactly the curves of label L, of the n, and wait for the shading's drawing (spy() installed): every checkbox
+// that differs but the last is set without an event, and the last clicked, which asks for one drawing. (Asks in a row
+// can have a drawing posted before the worker saw the last ask arrive after it, which drawnSince() would take for the
+// last ask's.) qual_viewer_checks clicks, presses and taps the checkboxes themselves.
+async function check(page, n, L) {
+  const count = await checkboxes(page).count()
+  if (count !== n) throw new Error(`${count} checkboxes for ${n} curves`)
+  const last = await page.evaluate(L => {
+    const all = [...document.querySelectorAll('#curves input[type=checkbox]')], differ = all.filter((c, i) => c.checked !== Boolean(L >> i & 1))
+    differ.slice(0, -1).forEach(c => { c.checked = !c.checked })
+    return all.indexOf(differ.at(-1))
+  }, L)
+  if (last >= 0) await redrawn(page, () => checkboxes(page).nth(last).click())
+}
+// Open the viewer for n with spy() installed, and wait until it is ready and its first drawing (the shading) is shown
+async function openShaded(page, n) {
+  await page.addInitScript(spy)
+  await open(page, n)
+  await drawnSince(page, 0)
+}
+// Do act() and wait for the drawing it asks for (spy() installed)
+async function redrawn(page, act) {
+  const t = await now(page)
+  await act()
+  await drawnSince(page, t)
+}
+// The curve each curve lands on when the drawing turns by -360/n degrees (see turn, in quals.py), from the uses' angles
+function landing(angles) {
+  const n = angles.length, gap = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180)
+  return angles.map(a => {
+    const j = angles.reduce((best, b, k) => gap(b, a - 360 / n) < gap(angles[best], a - 360 / n) ? k : best, 0)
+    assert(gap(angles[j], a - 360 / n) < 1e-6, `no use turns curve 0 by ${a} - 360/${n} degrees: ${angles}`)
+    return j
+  })
+}
+const landed = (L, lands) => lands.reduce((M, j, i) => M | (L >> i & 1) << j, 0)   // label L, every curve turned
+// Click the turn button and follow #region's transform, a frame at a time, until the button is enabled again: whether
+// it was disabled meanwhile, and at each frame the angle #region was turned by (degrees, clockwise on screen), its
+// transform's other entries (a turn has b = -c, a = d, e = f = 0 and a² + b² = 1) and its transform-origin
+const turning = page => page.evaluate(async () => {
+  const region = document.getElementById('region'), button = document.getElementById('turn'), seen = []
+  button.click()
+  const disabled = button.disabled, t0 = performance.now()
+  while (button.disabled && performance.now() - t0 < 120000) {
+    const s = getComputedStyle(region), m = s.transform === 'none' ? new DOMMatrix() : new DOMMatrix(s.transform)
+    seen.push({ angle: Math.atan2(m.b, m.a) * 180 / Math.PI, m: [m.a, m.b, m.c, m.d, m.e, m.f], origin: s.transformOrigin })
+    await new Promise(ok => requestAnimationFrame(ok))
+  }
+  return { disabled, seen, after: getComputedStyle(region).transform, enabled: !button.disabled }
+})
+// Expect a turn followed by turning() to have turned the shading about the page's centre (at window point o2) by
+// angles from 0 to -360/n degrees, some strictly between, and to have left it unturned (to 1e-4: the computed
+// transform gives six digits)
+function turnedWell(r, n, o2, what, problem) {
+  if (!r.disabled) problem(`${what}: the turn button stayed enabled while it turned`)
+  if (!r.enabled) problem(`${what}: the turn button still disabled after 2 minutes`)
+  const off = r.seen.filter(({ angle, m: [a, b, c, d, e, f] }) => !(angle >= -360 / n - 1e-4 && angle <= 1e-4 && Math.abs(a - d) < 1e-4 &&
+    Math.abs(b + c) < 1e-4 && Math.abs(a * a + b * b - 1) < 1e-4 && Math.abs(e) < 1e-4 && Math.abs(f) < 1e-4))
+  if (off.length) problem(`${what}: #region's transform was not a turn by 0 to -360/${n} degrees: ${JSON.stringify(off[0])}`)
+  if (!r.seen.some(({ angle }) => angle > -360 / n + 0.5 && angle < -0.5)) problem(`${what}: not animated: #region turned by ${r.seen.map(s => s.angle.toFixed(1))}`)
+  const away = r.seen.filter(s => s.origin.split(' ').some((v, i) => !(Math.abs(parseFloat(v) - o2[i]) <= 0.5)))
+  if (away.length) problem(`${what}: #region turned about ${away[0].origin}, not the page's centre at (${o2.map(v => v.toFixed(1))})`)
+  if (!['none', 'matrix(1, 0, 0, 1, 0, 0)'].includes(r.after)) problem(`${what}: once turned, #region's transform is ${r.after}, not the identity`)
+}
 
 const CHECKS = {
   async fit(page, problem) {
@@ -711,6 +932,222 @@ const CHECKS = {
     }
   },
 
+  // ---- The shading (see probes())
+
+  async shading(page, problem) {
+    for (const [n, labels] of [[3, [0, 1, 2, 3, 4, 5, 6, 7]], [SMALL, [0, 0b1, 0b110, 0b10101, 0b111111, 0b1111111]]]) {
+      await (async () => {
+        assert(PATHS.includes(n), `n = ${n} is not among the n given: ${PATHS}`)
+        await openShaded(page, n)
+        const ps = await probes(page, n, await mapping(page))
+        for (const L of labels) {
+          await check(page, n, L)
+          await shows(page, ps, L, `n=${n}, curves ${curvesIn(L)} checked`, problem)
+        }
+      })().catch(e => problem(`n=${n}: ${e.name}: ${e.message.split('\n')[0]}`))
+    }
+  },
+
+  async checks(page, problem) {
+    // While the drawing loads, and once it has: one checkbox per curve, unchecked, disabled until it has
+    let release
+    const gate = new Promise(ok => { release = ok })
+    await page.route(`**/img/venn-${nn(SMALL)}.svg`, async route => { await gate; await route.continue() })
+    await page.addInitScript(spy)
+    await page.goto(`${BASE}/view.html?n=${SMALL}`, { waitUntil: 'commit' })
+    await page.waitForSelector('#curves button')
+    const state = () => page.evaluate(() => [...document.querySelectorAll('#curves input[type=checkbox]')].map(c => [c.checked, c.disabled]))
+    for (const [disabled, what] of [[true, 'while the drawing loads'], [false, 'once it has arrived']]) {
+      if (!disabled) {
+        release()
+        await ready(page, SMALL)
+        await drawnSince(page, 0)
+      }
+      const got = JSON.stringify(await state()), want = JSON.stringify(Array(SMALL).fill([false, disabled]))
+      if (got !== want) problem(`${what}, the checkboxes (checked, disabled) are ${got}, not ${want}`)
+    }
+    await page.unroute(`**/img/venn-${nn(SMALL)}.svg`)
+    const names = [...(await page.locator('#curves').ariaSnapshot()).matchAll(/- checkbox "([^"]*)"/g)].map(m => m[1])
+    if (names.length !== SMALL || new Set(names).size !== SMALL || names.some((s, i) => !new RegExp(`(^|\\D)${i + 1}(\\D|$)`).test(s)))
+      problem(`the checkboxes' accessible names are ${JSON.stringify(names)}`)
+    // Checkbox i beside swatch i, to its right (this window is landscape, so the swatches stand in a column), or, in
+    // a portrait window, under it; centred on it either way, and nearer it than a swatch's side
+    const placed = async (where, w, h) => {
+      await page.setViewportSize({ width: w, height: h })
+      await frames(page)
+      const boxes = await page.evaluate(() => [...document.querySelectorAll('#curves button')].map((b, i) => {
+        const s = b.getBoundingClientRect(), c = document.querySelectorAll('#curves input[type=checkbox]')[i]?.getBoundingClientRect()
+        return [s.left, s.top, s.right, s.bottom, ...c ? [c.left, c.top, c.right, c.bottom] : []]
+      }))
+      boxes.forEach(([sl, st, sr, sb, cl, ct, cr, cb], i) => {
+        const side = sb - st, [gap, off] = where === 'beside' ? [cl - sr, (ct + cb - st - sb) / 2] : [ct - sb, (cl + cr - sl - sr) / 2]
+        if (!(gap >= 0 && gap < side && Math.abs(off) <= 1))
+          problem(`in a ${w} by ${h} window, checkbox ${i} is at ${[cl, ct, cr, cb]}, not ${where} swatch ${i}, at ${[sl, st, sr, sb]}`)
+      })
+    }
+    await placed('beside', W, H)
+    // A click, another, and Space: each toggles a checkbox, and the shading follows
+    const ps = await probes(page, SMALL, await mapping(page))
+    for (const [act, L, what] of [[() => checkboxes(page).nth(0).click(), 0b1, 'a click on curve 0\'s checkbox'],
+                                  [() => checkboxes(page).nth(3).click(), 0b1001, 'then one on curve 3\'s'],
+                                  [async () => { await checkboxes(page).nth(0).focus(); await page.keyboard.press('Space') }, 0b1000, 'then Space on curve 0\'s']]) {
+      await redrawn(page, act)
+      const got = await checked(page)
+      if (got !== L) problem(`after ${what}, curves ${curvesIn(got)} are checked, not ${curvesIn(L)}`)
+      await shows(page, ps, L, `after ${what}`, problem)
+    }
+    await placed('under', 600, 800)
+    await page.setViewportSize({ width: W, height: H })
+    // A phone with a touch screen: a tap toggles, and the target is 44 by 44 pixels or more
+    const phone = await page.context().browser().newContext({ viewport: { width: 375, height: 667 }, hasTouch: true })
+    try {
+      const p = await phone.newPage()
+      p.setDefaultTimeout(10000)
+      await p.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort())
+      await openShaded(p, SMALL)
+      const ps2 = await probes(p, SMALL, await mapping(p))
+      for (const [L, what] of [[0b1000000, 'a tap on curve 6\'s checkbox'], [0, 'a second tap']]) {
+        await redrawn(p, () => checkboxes(p).nth(6).tap())
+        const got = await checked(p)
+        if (got !== L) problem(`375 by 667, touch screen: after ${what}, curves ${curvesIn(got)} are checked, not ${curvesIn(L)}`)
+        await shows(p, ps2, L, `375 by 667, touch screen: after ${what}`, problem)
+      }
+      const small = await p.evaluate(() => [...document.querySelectorAll('#curves input[type=checkbox]')].map((c, i) => {
+        const r = (c.labels[0] ?? c).getBoundingClientRect()
+        return [i, Math.round(r.width), Math.round(r.height)]
+      }).filter(([, w, h]) => w < 44 || h < 44))
+      if (small.length) problem(`375 by 667, touch screen: these checkboxes' targets are under 44 by 44 pixels: ${JSON.stringify(small)}`)
+    } finally {
+      await phone.close()
+    }
+  },
+
+  async slider(page, problem) {
+    await open(page, SMALL)
+    const m0 = await ctm(page)
+    const centres = await page.evaluate(() => [...document.querySelectorAll('#curves button')].map(b => {
+      const r = b.getBoundingClientRect()
+      return [r.left + r.width / 2, r.top + r.height / 2]
+    }))
+    const at = async (k, what) => {   // curves 0 to k shown, exactly their swatches pressed
+      const s = await page.evaluate(() => ({
+        shown: [...document.querySelectorAll('#stage path')].map(p => getComputedStyle(p).display !== 'none'),
+        pressed: [...document.querySelectorAll('#curves button')].map(b => b.getAttribute('aria-pressed') === 'true') }))
+      const want = s.pressed.map((_, i) => i <= k)
+      if (String(s.shown) !== String(want) || String(s.pressed) !== String(want))
+        problem(`${what}: curves shown ${s.shown}, swatches pressed ${s.pressed}, not those up to curve ${k}`)
+    }
+    const past = (a, b) => [b[0] + 2 * (b[0] - a[0]), b[1] + 2 * (b[1] - a[1])]   // two swatches on from b, away from a
+    // A mouse, from the first swatch to the fifth a swatch at a time, then past the last; from the third back past the first
+    for (const [from, path, what] of [[0, [[1, 1], [2, 2], [3, 3], [4, 4], [past(centres[SMALL - 2], centres[SMALL - 1]), SMALL - 1]], 'dragging from the first swatch'],
+                                      [2, [[1, 1], [0, 0], [past(centres[1], centres[0]), 0]], 'dragging from the third swatch']]) {
+      await page.mouse.move(...centres[from])
+      await page.mouse.down()
+      await at(from, `${what}, pressed`)
+      for (const [to, k] of path) {
+        await page.mouse.move(...(Array.isArray(to) ? to : centres[to]), { steps: 4 })
+        await at(k, `${what}, at ${Array.isArray(to) ? `(${to.map(Math.round)}), past an end` : `swatch ${to}`}`)
+      }
+      await page.mouse.up()
+      await at(path.at(-1)[1], `${what}, released`)
+    }
+    // A finger, from the second swatch to the fourth (synthetic touch pointers, as a phone sends them, at the swatch
+    // pressed, which keeps the pointer)
+    const touch = (events) => page.evaluate(events => {
+      const b = document.querySelectorAll('#curves button')[1]
+      for (const [type, [x, y], buttons] of events) b.dispatchEvent(new PointerEvent(type, { pointerId: 9, pointerType: 'touch',
+        isPrimary: true, button: type === 'pointermove' ? -1 : 0, buttons, clientX: x, clientY: y, bubbles: true }))
+    }, events)
+    await touch([['pointerdown', centres[1], 1], ['pointermove', centres[2], 1]])
+    await at(2, 'a finger dragged from the second swatch to the third')
+    await touch([['pointermove', centres[3], 1], ['pointerup', centres[3], 0]])
+    await at(3, 'then on to the fourth, and lifted')
+    // Keys, starting from the fourth swatch focused
+    await page.locator('#curves button').nth(3).focus()
+    for (const [key, k] of [['ArrowRight', 4], ['ArrowDown', 5], ['ArrowLeft', 4], ['ArrowUp', 3], ['ArrowUp', 2], ['Home', 0], ['End', SMALL - 1]]) {
+      await page.keyboard.press(key)
+      await at(k, `${key} on a swatch`)
+      const focus = await page.evaluate(() => [...document.querySelectorAll('#curves button')].indexOf(document.activeElement))
+      if (focus !== k) problem(`after ${key}, the focus is on swatch ${focus}, not ${k}`)
+    }
+    holds(problem, await ctm(page), [m0.e, m0.f], [0, 0], m0.a, 'after dragging along the swatches and pressing keys on them')
+  },
+
+  async turn(page, problem) {
+    for (const [n, L0] of [[3, 0b1], [SMALL, 0b101]]) {
+      await (async () => {
+        await openShaded(page, n)
+        const { angles, side } = await shape(n), lands = landing(angles)
+        const m = await mapping(page), ps = await probes(page, n, m)
+        const curves = () => page.evaluate(() => [...document.querySelectorAll('#stage path')].map(p => [p.getAttribute('d'), p.getAttribute('stroke')]))
+        const before = await curves(), centre = [(side / 2 - m.x) / m.s, (side / 2 - m.y) / m.s]
+        let L = L0
+        await check(page, n, L)
+        for (const what of ['the first turn', 'a second turn', 'a turn with every curve checked']) {
+          if (what === 'a turn with every curve checked') {
+            L = 2 ** n - 1
+            await check(page, n, L)
+          }
+          const r = await turning(page)
+          L = landed(L, lands)
+          turnedWell(r, n, centre, `n=${n}, ${what}`, problem)
+          const got = await checked(page)
+          if (got !== L) problem(`n=${n}, after ${what}: curves ${curvesIn(got)} checked, not ${curvesIn(L)}`)
+          await shows(page, ps, L, `n=${n}, after ${what}`, problem)
+        }
+        if (JSON.stringify(await curves()) !== JSON.stringify(before)) problem(`n=${n}: the curves' paths or colours changed in the turns`)
+        holds(problem, await ctm(page), [m.x, m.y].map(v => -v / m.s), [0, 0], 1 / m.s, `n=${n}, after the turns`)
+      })().catch(e => problem(`n=${n}: ${e.name}: ${e.message.split('\n')[0]}`))
+    }
+  },
+
+  async follow(page, problem) {
+    await openShaded(page, SMALL)
+    await check(page, SMALL, 0b101)
+    const p = (await probes(page, SMALL, await mapping(page))).find(q => q.label === 0b101)
+    if (!p) throw new Error('no probe of label 5 at fit')
+    // The gestures of settle, about p: a drag from it, then the wheel and a pinch where the drag left it, which keep
+    // it there. At every event, how far the shading's canvas is from where the picture's transform puts the box it had.
+    const [x, y] = [p.x + 0.5 + 75, p.y + 0.5 + 45], t = await now(page)   // where the drag leaves p
+    const off = await page.evaluate(async ([x, y]) => {
+      const stage = document.getElementById('stage'), shade = document.querySelector('#region canvas')
+      const ptr = (type, id, x, y, buttons, pointerType) => stage.dispatchEvent(new PointerEvent(type,
+        { pointerId: id, pointerType, isPrimary: id === 1, button: 0, buttons, clientX: x, clientY: y, bubbles: true }))
+      const wait = ms => new Promise(ok => setTimeout(ok, ms))
+      const box = () => { const b = shade.getBoundingClientRect(); return [b.left, b.top, b.width, b.height] }
+      const B0 = box(), off = []
+      const track = () => {
+        const m = new DOMMatrix(getComputedStyle(document.getElementById('picture')).transform)
+        off.push(Math.max(...[m.a * B0[0] + m.e, m.d * B0[1] + m.f, m.a * B0[2], m.d * B0[3]].map((v, i) => Math.abs(v - box()[i]))))
+      }
+      ptr('pointerdown', 1, x - 75, y - 45, 1, 'mouse')
+      for (let i = 1; i <= 15; i++) { ptr('pointermove', 1, x - 75 + 5 * i, y - 45 + 3 * i, 1, 'mouse'); track(); await wait(16) }
+      ptr('pointerup', 1, x, y, 0, 'mouse')
+      for (let i = 0; i < 10; i++) {
+        dispatchEvent(new WheelEvent('wheel', { deltaY: -40, clientX: x, clientY: y, bubbles: true, cancelable: true }))
+        track(); await wait(16)
+      }
+      ptr('pointerdown', 1, x, y, 1, 'touch'); ptr('pointerdown', 2, x + 60, y, 1, 'touch')
+      for (let i = 1; i <= 10; i++) { ptr('pointermove', 2, x + 60 + 6 * i, y, 1, 'touch'); track(); await wait(16) }
+      ptr('pointerup', 2, x + 120, y, 0, 'touch'); ptr('pointerup', 1, x, y, 0, 'touch')
+      // Then until the new drawing arrives, drawn anew SETTLE ms after the gestures, how far the old one moves from
+      // where the gestures left it
+      const B1 = box(), seen = window.__seen, t1 = performance.now()
+      let pending = 0
+      while (!(seen.asked.some(t => t > t1) && seen.shown.at(-1) > seen.asked.at(-1)) && performance.now() - t1 < 60000) {
+        pending = Math.max(pending, ...box().map((v, i) => Math.abs(v - B1[i])))
+        await wait(5)
+      }
+      return [Math.max(...off), pending]
+    }, [x, y])
+    if (!(off[0] <= 0.5)) problem(`during the gestures the shading's canvas was up to ${off[0].toFixed(1)} pixels from where the picture's transform put it`)
+    if (!(off[1] <= 0.5)) problem(`waiting for the shading drawn anew, the old one moved up to ${off[1].toFixed(1)} pixels from where the gestures left it`)
+    await drawnSince(page, t)
+    await shows(page, await probes(page, SMALL, await mapping(page)), 0b101, 'drawn anew after the gestures', problem)
+    await redrawn(page, () => page.mouse.dblclick(x, y))
+    await shows(page, await probes(page, SMALL, await mapping(page)), 0b101, 'drawn anew after a double-click', problem)
+  },
+
   // ---- The canvas (CANVAS); see spy() and compare()
 
   async canvasFit(page, problem) {
@@ -1041,6 +1478,81 @@ const CHECKS = {
       } finally {
         await p.context().close()
       }
+    }
+  },
+
+  async canvasShading(page, problem) {
+    for (const n of CANVAS) {
+      const { side } = await shape(n), { knots } = await source(n)
+      await openCanvas(page, n)
+      const fit = fitted(await area(page), side)
+      // Expect the drawing at mapping m, with label L shaded
+      const look = async (m, L, what) => {
+        await shows(page, await probes(page, n, m), L, `n=${n}, ${what}`, problem)
+        await matches(page, n, m, n - 1, `n=${n}, ${what}`, problem)
+      }
+      // Wait for the drawing of whatever act() changes, then look()
+      const after = async (act, m, L, what) => {
+        const t = await now(page)
+        await act()
+        await drawnSince(page, t)
+        await look(m, L, what)
+      }
+      await look(fit, 0, 'at fit, nothing checked')
+      await after(() => check(page, n, 2 ** n - 1), fit, 2 ** n - 1, 'at fit, all checked')
+      // Zoomed in by 64 about a point on curve 0, to the pixel (browsers report a wheel's position in whole pixels)
+      const s = knots[1].map((v, i) => Math.round((v - [fit.x, fit.y][i]) / fit.s)), m = zoomed(fit, fit, s, 64)
+      let t = await now(page)
+      await page.evaluate(([x, y, deltaY]) => document.getElementById('stage').dispatchEvent(
+        new WheelEvent('wheel', { deltaY, clientX: x, clientY: y, bubbles: true, cancelable: true })), [...s, -400 * Math.log(64)])
+      await drawnSince(page, t)
+      const L = commonest(await probes(page, n, m))
+      await after(() => check(page, n, L), m, L, `zoomed in by 64 about (${s}), curves ${curvesIn(L)} checked`)
+      await after(async () => {
+        await page.mouse.move(...s)
+        await page.mouse.down()
+        await page.mouse.move(s[0] - 100, s[1], { steps: 5 })
+        await page.mouse.up()
+      }, { ...m, x: m.x + 100 * m.s }, L, `then dragged 100 pixels left`)
+    }
+  },
+
+  async canvasTurn(page, problem) {
+    for (const n of CANVAS) {
+      const { side, angles } = await shape(n), { knots } = await source(n), lands = landing(angles)
+      await openCanvas(page, n)
+      const fit = fitted(await area(page), side)
+      const s = knots[1].map((v, i) => Math.round((v - [fit.x, fit.y][i]) / fit.s)), m = zoomed(fit, fit, s, 64)
+      let t = await now(page)
+      await page.evaluate(([x, y, deltaY]) => document.getElementById('stage').dispatchEvent(
+        new WheelEvent('wheel', { deltaY, clientX: x, clientY: y, bubbles: true, cancelable: true })), [...s, -400 * Math.log(64)])
+      await drawnSince(page, t)
+      const L = commonest(await probes(page, n, m))
+      t = await now(page)
+      await check(page, n, L)
+      await drawnSince(page, t)
+      const r = await turning(page), L2 = landed(L, lands)
+      turnedWell(r, n, [(side / 2 - m.x) / m.s, (side / 2 - m.y) / m.s], `n=${n}, zoomed in by 64 about (${s})`, problem)
+      const got = await checked(page)
+      if (got !== L2) problem(`n=${n}: after the turn, curves ${curvesIn(got)} checked, not ${curvesIn(L2)}`)
+      // Drag P, the page point at s, turned by -360/n about the centre, to where P was: synthetic pointers, since the
+      // drag may be longer than the window (where Playwright's Firefox drops mouse events)
+      const a = -2 * Math.PI / n, [px, py] = [m.x + s[0] * m.s, m.y + s[1] * m.s], mid = side / 2
+      const q = [mid + (px - mid) * Math.cos(a) - (py - mid) * Math.sin(a), mid + (px - mid) * Math.sin(a) + (py - mid) * Math.cos(a)]
+      const d = [(px - q[0]) / m.s, (py - q[1]) / m.s]
+      t = await now(page)
+      await page.evaluate(([[x, y], [dx, dy]]) => {
+        const stage = document.getElementById('stage')
+        const ptr = (type, k, buttons) => stage.dispatchEvent(new PointerEvent(type, { pointerId: 1, pointerType: 'mouse', isPrimary: true,
+          button: 0, buttons, clientX: x + dx * k / 20, clientY: y + dy * k / 20, bubbles: true }))
+        ptr('pointerdown', 0, 1)
+        for (let k = 1; k <= 20; k++) ptr('pointermove', k, 1)
+        ptr('pointerup', 20, 0)
+      }, [s, d])
+      const m2 = { s: m.s, x: m.x - d[0] * m.s, y: m.y - d[1] * m.s }
+      await drawnSince(page, t)
+      await shows(page, await probes(page, n, m2), L2, `n=${n}, turned and dragged to P turned`, problem)
+      await matches(page, n, m2, n - 1, `n=${n}, turned and dragged to P turned`, problem)
     }
   },
 }

@@ -1,8 +1,10 @@
 'use strict'
-// The worker that draws, for view.html, a drawing too big for SVG paths (23's: see view.html's canvasRenderer()).
-// canvas.js?file=F&n=N fetches F, the SVG of drawing N, reads it (parse()) and cuts curve 0 into cells (cells()). Each
-// message from the page is then a view to draw: draw() draws it on a canvas of its own and posts the page the drawing,
-// an ImageBitmap; a newer view stops a drawing still under way. If the file can't be read, it posts the page the error.
+// The worker that draws, for view.html, a drawing too big for SVG paths (23's: see view.html's canvasRenderer()), and
+// the shading (view.html's shade()) of every drawing. canvas.js?file=F&n=N fetches F, the SVG of drawing N, reads it
+// (parse()), cuts curve 0 into cells (cells()) and puts its spans in a tree of boxes (tree()). Each message from the
+// page is then a view to draw: draw() draws its curves on a canvas of its own and the shading on another, and posts the
+// page the drawings, ImageBitmaps; a newer view stops a drawing still under way. If the file can't be read, it posts
+// the page the error.
 const PAGE = 51200, MID = PAGE / 2     // the side of every drawing's square page, and its centre (venn.py's PAGE)
 const G = 64                           // the cells: a G by G grid of the page
 const BATCH = 64                       // ms a batch of drawing takes, about; between batches the worker looks for views
@@ -11,6 +13,7 @@ const canvas = new OffscreenCanvas(1, 1)
 // Drawn on the CPU (willReadFrequently), where the getImageData() that ends each batch costs little and has the
 // batch drawn then
 const ctx = canvas.getContext('2d', { willReadFrequently: true })
+const shading = new OffscreenCanvas(1, 1), shade = shading.getContext('2d', { willReadFrequently: true })   // likewise
 // Each finished drawing is copied to this canvas, drawn on the GPU, before it goes to the page: WebKit uploads a
 // drawing from a CPU canvas to the GPU on the page's own thread when the page shows it, which took 145 to 364 ms a
 // drawing in a 2560 by 1440 window with 2 device pixels to a CSS pixel. With the copy made here (and the canvas a
@@ -91,6 +94,60 @@ function parse(b, n) {
   return { xy, colours: uses.map(m => m[1]), angles: uses.map(m => Number(m[3])), width: Number(uses[0][2]) }
 }
 
+// A tree over runs of curve 0's spans, for outline(). Node k covers spans a to b - 1: its box, boxes[4k] to
+// boxes[4k + 3] (x0, y0, x1, y1), bounds their control points, and so the spans; and its flatness, flat[k], bounds how
+// far they stray from the chord between their ends (the segment from the start of span a to the end of span b - 1).
+// If b - a > 1, its children, over spans a to mid - 1 and mid to b - 1 (mid = (a + b) >> 1), are nodes k + 1 and
+// k + 2 (mid - a), and its flatness is theirs, the larger, plus how far their chords' common end strays from its own
+// chord (every point of their chords strays no further than their ends do).
+function tree(xy) {
+  const nodes = 2 * (xy.length - 2) / 6 - 1, boxes = new Float64Array(4 * nodes), flat = new Float64Array(nodes)
+  const off = (q, a, b) => {           // how far point q of xy strays from the segment from point a to point b
+    const dx = xy[b] - xy[a], dy = xy[b + 1] - xy[a + 1], l = dx * dx + dy * dy
+    const u = Math.max(0, Math.min(1, ((xy[q] - xy[a]) * dx + (xy[q + 1] - xy[a + 1]) * dy) / (l || 1)))
+    return Math.hypot(xy[q] - xy[a] - u * dx, xy[q + 1] - xy[a + 1] - u * dy)
+  }
+  const build = (k, a, b) => {
+    const mid = (a + b) >> 1, l = k + 1, r = k + 2 * (mid - a)
+    if (b - a === 1) {
+      const c = xy.subarray(6 * a, 6 * a + 8)
+      boxes.set([Math.min(c[0], c[2], c[4], c[6]), Math.min(c[1], c[3], c[5], c[7]),
+                 Math.max(c[0], c[2], c[4], c[6]), Math.max(c[1], c[3], c[5], c[7])], 4 * k)
+      flat[k] = Math.max(off(6 * a + 2, 6 * a, 6 * b), off(6 * a + 4, 6 * a, 6 * b))
+      return
+    }
+    build(l, a, mid)
+    build(r, mid, b)
+    for (let j = 0; j < 4; j++) boxes[4 * k + j] = (j < 2 ? Math.min : Math.max)(boxes[4 * l + j], boxes[4 * r + j])
+    flat[k] = Math.max(flat[l], flat[r]) + off(6 * mid, 6 * a, 6 * b)
+  }
+  build(0, 0, (xy.length - 2) / 6)
+  return { boxes, flat }
+}
+
+// Curve 0 as a Path2D to fill for a view whose box in curve 0's page is [x0, y0, x1, y1]: exact where it comes into the
+// box, but each run of spans whose box misses the box, or that strays under tol from its chord, replaced by the chord.
+// Where the run's box misses the view's, that changes which side of the curve no point of the view is on (the run
+// and its chord lie in the run's box); where the run strays under tol, none further than 2 tol from the curve (the
+// run and its chord lie within tol of the chord, which lies within tol of the run). So the fill needs few pieces at any
+// zoom: in a 1200 by 800 window, curve 0 of 23 took WebKit 7 s to fill as the polygon of its 729,449 knots, 0.72 s as
+// that of every 4th knot, 87 ms of every 16th (Chromium 52, 20 and 8 ms), and has 42,000 lines and 61 spans this
+// way at fit with tol half a pixel, 8,700 and 192 zoomed in by 16. Returns the path and how many pieces it has.
+function outline(xy, { boxes, flat }, [x0, y0, x1, y1], tol) {
+  const p = new Path2D()
+  const walk = (k, a, b) => {
+    const i = 4 * k, mid = (a + b) >> 1
+    if (boxes[i] > x1 || boxes[i + 2] < x0 || boxes[i + 1] > y1 || boxes[i + 3] < y0 || flat[k] < tol) p.lineTo(xy[6 * b], xy[6 * b + 1])
+    else if (b - a === 1) p.bezierCurveTo(xy[6 * a + 2], xy[6 * a + 3], xy[6 * a + 4], xy[6 * a + 5], xy[6 * a + 6], xy[6 * a + 7])
+    else return walk(k + 1, a, mid) + walk(k + 2 * (mid - a), mid, b)
+    return 1
+  }
+  p.moveTo(xy[0], xy[1])
+  const pieces = walk(0, 0, (xy.length - 2) / 6)
+  p.closePath()
+  return [p, pieces]
+}
+
 // Curve 0 cut along the grid of cells: each span goes to the cell holding its start, and each cell's spans, in curve
 // order, become a Path2D (a subpath for each run of consecutive spans), with the box bounding their control points,
 // which bounds the spans themselves: paths[c], boxes[4c to 4c + 3] (x0, y0, x1, y1), spans[c] (how many).
@@ -128,10 +185,12 @@ function cells(xy) {
 }
 
 // Draw a view, job: { x, y, s } (page point (x, y) at the window's top left, s page units to a CSS pixel), fit (s at
-// zoom 1), w and h (the window, in CSS pixels), dpr (device pixels to a CSS pixel), k (curves 0 to k shown).
+// zoom 1), w and h (the window, in CSS pixels), dpr (device pixels to a CSS pixel), k (curves 0 to k shown), inside
+// (inside[i]: whether the shading is inside curve i, or outside it), colour (the shading's), seq (the job's number,
+// posted back with its drawing).
 let latest = 0                         // the number of the latest job: the drawing of an older one stops
 let quota = 2000                       // spans in a batch: about BATCH ms' worth, at the last batch's rate
-function draw({ colours, angles, width, cells: { paths, boxes, spans } }, { x, y, s, fit, w, h, dpr, k }) {
+function draw({ colours, angles, width, xy, tree, cells: { paths, boxes, spans } }, { x, y, s, fit, w, h, dpr, k, inside, colour, seq }) {
   const job = ++latest
   // The lines are width / fit CSS pixels wide at any zoom, the SVG's stroke-width at fit. Wider than about 0.9 device
   // pixel, they fall off the browsers' fast path for thin lines: drawing 23 in a 2560 by 1440 window with 2 device
@@ -141,23 +200,55 @@ function draw({ colours, angles, width, cells: { paths, boxes, spans } }, { x, y
   // own pixels wide (each then spread over more than one device pixel on the screen); then it took 1.4 to 4.1 s, and
   // the lines look a little softer.
   const r = Math.min(dpr, 0.85 * fit / width)
-  canvas.width = Math.round(w * r)     // which also clears it and resets the context
-  canvas.height = Math.round(h * r)
+  // The shading has no lines, and its edges must hide under the curves' (as SVG paths, as wide as at fit), so its
+  // canvas has rs pixels to a CSS pixel: as many as the curves', but at least one, unless the screen has fewer
+  const rs = Math.min(dpr, Math.max(1, r))
+  for (const [c, q] of [[canvas, r], [shading, rs]]) {
+    c.width = Math.round(w * q)        // which also clears it and resets the context
+    c.height = Math.round(h * q)
+  }
   ctx.lineCap = ctx.lineJoin = 'round'
   ctx.lineWidth = width * s / fit      // in page units, under the transforms below
-  // The work: each cell of each curve shown whose box meets the window turned back by that curve's angle, widened by
-  // half a line and two canvas pixels (antialiasing reaches one)
-  const work = [], pad = ctx.lineWidth / 2 + 2 * s / r
-  for (let i = 0; i <= k; i++) {
-    const a = angles[i] * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a), f = r / s
-    // Curve i is curve 0 turned by a about the centre: page point p goes to f (turn(p) - (x, y)) on the canvas
-    const transform = [f * c, f * sn, -f * sn, f * c, f * (MID - c * MID + sn * MID - x), f * (MID - sn * MID - c * MID - y)]
+  // Curve i is curve 0 turned by its angle a about the centre (turns[i]: cos a, sin a): page point p goes to
+  // q (turn(p) - (x, y)) / s on a canvas with q pixels to a CSS pixel, under transform(turns[i], q). The window, turned
+  // back by a, and widened by half a line and two canvas pixels (antialiasing reaches one), lies in the box views[i]
+  // (x0, y0, x1, y1) of curve 0's page.
+  const turns = angles.map(deg => [Math.cos(deg * Math.PI / 180), Math.sin(deg * Math.PI / 180)])
+  const transform = ([c, sn], q) => {
+    const f = q / s
+    return [f * c, f * sn, -f * sn, f * c, f * (MID - c * MID + sn * MID - x), f * (MID - sn * MID - c * MID - y)]
+  }
+  const pad = ctx.lineWidth / 2 + 2 * s / r
+  const views = turns.map(([c, sn]) => {
     const corners = [[x, y], [x + w * s, y], [x, y + h * s], [x + w * s, y + h * s]]
       .map(([px, py]) => [MID + (px - MID) * c + (py - MID) * sn, MID - (px - MID) * sn + (py - MID) * c])
-    const x0 = Math.min(...corners.map(p => p[0])) - pad, x1 = Math.max(...corners.map(p => p[0])) + pad
-    const y0 = Math.min(...corners.map(p => p[1])) - pad, y1 = Math.max(...corners.map(p => p[1])) + pad
+    return [Math.min(...corners.map(p => p[0])) - pad, Math.min(...corners.map(p => p[1])) - pad,
+            Math.max(...corners.map(p => p[0])) + pad, Math.max(...corners.map(p => p[1])) + pad]
+  })
+  // The work, a step at a time, each saying how many spans (or pieces) it drew. First the shading: colour all over,
+  // then kept only inside each curve checked (destination-in) and cleared inside each other (destination-out), each
+  // curve's outline() for this view, exact to half a pixel of the shading's canvas
+  const work = [() => {
+    shade.fillStyle = colour
+    shade.fillRect(0, 0, shading.width, shading.height)
+    return 0
+  }, ...inside.map((isIn, i) => () => {
+    const [path, pieces] = outline(xy, tree, views[i], s / rs / 2)
+    shade.globalCompositeOperation = isIn ? 'destination-in' : 'destination-out'
+    shade.setTransform(...transform(turns[i], rs))
+    shade.fill(path)
+    return pieces
+  })]
+  // Then the curves shown: each cell of each whose box meets the window, turned back
+  for (let i = 0; i <= k; i++) {
+    const [x0, y0, x1, y1] = views[i], t = transform(turns[i], r)
     for (let q = 0; q < paths.length; q++) {
-      if (boxes[4 * q] <= x1 && boxes[4 * q + 2] >= x0 && boxes[4 * q + 1] <= y1 && boxes[4 * q + 3] >= y0) work.push([transform, colours[i], q])
+      if (boxes[4 * q] <= x1 && boxes[4 * q + 2] >= x0 && boxes[4 * q + 1] <= y1 && boxes[4 * q + 3] >= y0) work.push(() => {
+        ctx.setTransform(...t)
+        ctx.strokeStyle = colours[i]
+        ctx.stroke(paths[q])
+        return spans[q]
+      })
     }
   }
   let next = 0
@@ -165,22 +256,19 @@ function draw({ colours, angles, width, cells: { paths, boxes, spans } }, { x, y
     if (job !== latest) return         // a newer view came in meanwhile
     const t0 = performance.now()
     let done = 0
-    for (; next < work.length && done < quota; next++) {
-      const [transform, colour, q] = work[next]
-      ctx.setTransform(...transform)
-      ctx.strokeStyle = colour
-      ctx.stroke(paths[q])
-      done += spans[q]
-    }
-    ctx.getImageData(0, 0, 1, 1)       // waits for the batch to be drawn: Chromium only records strokes until then
+    for (; next < work.length && done < quota; next++) done += work[next]()
+    for (const g of [ctx, shade]) g.getImageData(0, 0, 1, 1)   // waits for the batch to be drawn: Chromium only records
+                                                                // drawing until then
     quota = Math.max(1, done * BATCH / Math.max(1, performance.now() - t0))
     if (next < work.length) return setTimeout(batch)
-    shown.width = canvas.width
-    shown.height = canvas.height
-    copy.drawImage(canvas, 0, 0)
-    copy.getImageData(0, 0, 1, 1)       // waits for the copy, here rather than on the page's thread
-    const bitmap = shown.transferToImageBitmap()
-    postMessage({ bitmap, at: { x, y, s }, r, colours }, [bitmap])
+    const bitmaps = [canvas, shading].map(c => {
+      shown.width = c.width
+      shown.height = c.height
+      copy.drawImage(c, 0, 0)
+      copy.getImageData(0, 0, 1, 1)     // waits for the copy, here rather than on the page's thread
+      return shown.transferToImageBitmap()
+    })
+    postMessage({ bitmap: bitmaps[0], shading: bitmaps[1], at: { x, y, s }, r, rs, colours, angles, seq }, bitmaps)
   }
   setTimeout(batch)
 }
@@ -188,6 +276,6 @@ function draw({ colours, angles, width, cells: { paths, boxes, spans } }, { x, y
 const drawing = fetch(new URL(params.get('file'), location.href))
   .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status)))   // just the status, as view.html says it
   .then(b => parse(new Uint8Array(b), Number(params.get('n'))))
-  .then(({ xy, ...d }) => ({ ...d, cells: cells(xy) }))
+  .then(d => ({ ...d, cells: cells(d.xy), tree: tree(d.xy) }))
 drawing.catch(e => postMessage({ error: e.message }))
 onmessage = ({ data }) => drawing.then(d => draw(d, data))
