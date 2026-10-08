@@ -41,10 +41,10 @@ from pathlib import Path
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
-from scipy.spatial import cKDTree
 
 import cert
-from geom import candidate_pairs, nets, rotate, sample, segment_hits
+from crossings import crossings, cut, point, samples, segdist
+from geom import nets, rotate
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'vendor' / 'venn17'))
@@ -211,29 +211,22 @@ def inside(points, polys):
     return out
 
 
-def point_segment_distance(x, A, B):
-    ab = B - A
-    t = np.clip(((x - A) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-300), 0, 1)
-    return np.linalg.norm(x - (A + t[:, None] * ab), axis=1)
-
-
 def drawn_faces(path, n):
-    """Sample the curves of the drawing at path, find every crossing, and label the regions around each by walking
-    each curve through its crossings, toggling the labels of the regions on its two sides; all from one sector (a
-    1/n slice of the disk about the page centre).
+    """Find every crossing of the curves of the drawing at path, exactly (crossings.py: certified, not sampled), and
+    label the regions around each by walking each curve through its crossings, toggling the labels of the regions on
+    its two sides.
 
     Curve i is the SVG's one path turned by k_i sectors, each k from 0 to n - 1 once (asserted, to within 1e-9 of a
-    sector). So the drawing is the path's polyline P and n - 1 turned copies of it, and its crossings come in orbits
-    (a crossing and its n - 1 turns by multiples of a sector). Each orbit has a crossing in the sector from angle 0
-    to 360/n degrees, and both segments that crossing lies on reach into the sector; so intersecting the segments of
-    every copy of P that reach into it finds every orbit. It finds some twice, near the sector's edges, so an orbit is
-    named by the two segments of P its crossings lie on and the number of sectors between their copies of P. Each
-    orbit has two crossings on P itself: one with the copy d sectors on, and that one turned back d sectors, which is
-    on the copy d sectors back. Walking P through all of them is walking every curve, turned; turning a crossing
-    turns its labels too, each curve's bit moving to the curve as many sectors on. Returns what walking every curve
-    gives: the number of crossings (n per orbit); their faces (each orbit's turned n ways); and how many crossings the
-    two curves through them label differently. Segment contacts and self-intersections fail asserts, counted over the
-    whole drawing."""
+    sector). So the drawing is the path P and n - 1 turned copies of it, and its crossings come in orbits (a crossing
+    and its n - 1 turns by multiples of a sector). crossings() gives each orbit once, as a crossing of P with the copy
+    d sectors on, 1 <= d <= n/2, at positions span + t along P and along the copy. Each orbit has two crossings on P
+    itself: that one, and that one turned back d sectors, which is on the copy d sectors back. Walking P through all of
+    them is walking every curve, turned; turning a crossing turns its labels too, each curve's bit moving to the curve
+    as many sectors on. Returns what walking every curve gives: the number of crossings (n per orbit); their faces (each
+    orbit's turned n ways); and how many crossings the two curves through them label differently. Contacts (places
+    where crossings() could certify neither a crossing nor its absence) and self-intersections fail asserts, counted
+    over the whole drawing. Still sampled: the labels the walk starts from, those of two points either side of P
+    between two crossings, by even-odd tests against polylines through samples of every curve."""
     base, page, degrees = read_svg(path)
     assert len(degrees) == n, (len(degrees), n)
     turns = np.array(degrees) * n / 360
@@ -241,62 +234,33 @@ def drawn_faces(path, n):
     assert np.allclose(turns, np.round(turns), rtol=0, atol=1e-9) and sorted(k.tolist()) == list(range(n)), degrees
     curve = np.argsort(k)                        # curve[j] is the path turned by j sectors
     deg = np.array(degrees)[curve]               # by deg[j] degrees, as the file says
-    P = sample(base, float(np.median(np.linalg.norm(base[:, 3] - base[:, 0], axis=1))) / 6)[0]
-    A, B, M = P, np.roll(P, -1, 0), len(P)       # segment s of P runs from P[s] to P[s + 1]
-    assert n * M * M < 2 ** 63, 'orbit names overflow'
-    # each segment spans the angles lo to lo + width about the page centre (rotate() adds to angles)
-    a0 = np.arctan2(A[:, 1] - page / 2, A[:, 0] - page / 2)
-    sweep = np.remainder(np.arctan2(B[:, 1] - page / 2, B[:, 0] - page / 2) - a0 + math.pi, 2 * math.pi) - math.pi
-    lo, width, th = a0 + np.minimum(sweep, 0), np.abs(sweep), 2 * math.pi / n
-    assert width.max() < math.pi / 2, 'a segment passes too near the page centre'
-    reach = []                                   # the segments of each copy of P that reach into the sector
-    for j in range(n):
-        ang = np.remainder(lo + j * th, 2 * math.pi)
-        sel = np.flatnonzero((ang <= th + 1e-6) | (ang + width >= 2 * math.pi - 1e-6))   # a margin costs only time
-        reach.append((sel, np.full(len(sel), j), rotate(A[sel], page, deg[j]), rotate(B[sel], page, deg[j])))
-    seg, turn, SA, SB = (np.concatenate(x) for x in zip(*reach))
-    del reach, a0, sweep, lo, width
-    hits = [segment_hits(SA, SB, turn, seg, np.full(len(seg), M), i[q:q + 2_000_000], j[q:q + 2_000_000])
-            for i, j in candidate_pairs(0.5 * (SA + SB), float(np.linalg.norm(B - A, axis=1).max()) * 1.0001)
-            for q in range(0, len(i), 2_000_000)]
-    i, j, t, u, ti, tj = (np.concatenate(h) for h in zip(*hits))
-    del hits, SA, SB
-
-    def orbit(i, j):
-        """The name of the orbit of the crossing of found segments i and j, d * M^2 + s1 * M + s2 for segments s1 and
-        s2 of P and copies of P d sectors apart, from whichever end makes it smaller; and whether that is i's end."""
-        d = (turn[j] - turn[i]) % n
-        fwd, bwd = (d * M + seg[i]) * M + seg[j], ((n - d) % n * M + seg[j]) * M + seg[i]
-        return np.minimum(fwd, bwd), fwd <= bwd
-
-    touches = n * len(np.unique(orbit(ti, tj)[0]))
-    assert touches == 0, f'{touches} degenerate segment contacts'
-    name, ahead = orbit(i, j)
-    o = np.unique(name, return_index=True)[1]    # one crossing of each orbit
-    i, j, t, u, ahead = i[o], j[o], t[o], u[o], ahead[o]
-    d = np.where(ahead, turn[j] - turn[i], turn[i] - turn[j]) % n
-    s1, t1 = np.where(ahead, seg[i], seg[j]), np.where(ahead, t, u)
-    s2, t2 = np.where(ahead, seg[j], seg[i]), np.where(ahead, u, t)
+    X, C = crossings(base, page, deg)
+    assert len(C) == 0, f'{n * len(C)} contacts'
+    d = X[:, 0].astype(np.int64)
     assert not np.any(d == 0), f'{n * int(np.sum(d == 0))} self-intersections'
-    # P's crossings: each orbit's at s1 + t1, with the curve d sectors on; then each orbit's at s2 + t2, with the curve
-    # d sectors back
+    # P's crossings: each orbit's at span + t along P, with the curve d sectors on; then each orbit's at span + t along
+    # the copy, with the curve d sectors back
     K = len(d)
-    pos = np.concatenate([s1 + t1, s2 + t2])
+    pos = np.concatenate([X[:, 1] + X[:, 2], X[:, 3] + X[:, 4]])
     other = curve[np.concatenate([d, (n - d) % n])]
     order = np.roll(np.argsort(pos), -1)         # the walk starts just after crossing 0 and ends with it
-    # start between crossings 0 and 1, offset to both sides by a third of the clearance
+    # start between crossings 0 and 1, at x on P, offset to both sides by a third of the clearance, judged against the
+    # polyline through P's samples (segment s of it runs from sample s to sample s + 1)
     mid = 0.5 * (pos[order[-1]] + pos[order[0]])
-    s, f = int(mid), mid - int(mid)
-    a, b = P[s], P[(s + 1) % M]
-    x = a + f * (b - a)
+    span, t = samples(base, 6.0, 4)
+    A = point(base[span], t)
+    B, M = np.roll(A, -1, 0), len(A)
+    x = point(base[[int(mid)]], np.array([mid - int(mid)]))[0]
+    s = int(np.searchsorted(span + t, mid)) - 1
+    a, b = A[s % M], B[s % M]
     nrm = np.array([-(b - a)[1], (b - a)[0]]) / np.linalg.norm(b - a)
     # clearance: distance to every segment except this one and its two neighbours. A point's distance from curve[j],
     # and whether it is inside curve[j], are those of the point turned back j sectors from P.
     near = np.abs((np.arange(M) - s + 1) % M) <= 2
-    eps = min(float(point_segment_distance(rotate(x, page, -deg[j]), A, B)[(j > 0) | ~near].min())
+    eps = min(float(segdist(rotate(x, page, -deg[j]), A, B)[(j > 0) | ~near].min())
               for j in range(n)) / 3
     y = np.array([x + eps * nrm, x - eps * nrm])
-    lab = inside(np.concatenate([rotate(y, page, -deg[j]) for j in range(n)]), [P]).reshape(n, 2).T @ (1 << curve)
+    lab = inside(np.concatenate([rotate(y, page, -deg[j]) for j in range(n)]), [A]).reshape(n, 2).T @ (1 << curve)
     L, R = int(lab[0]), int(lab[1])
     assert L ^ R == 1 << int(curve[0]), 'the two start points do not straddle exactly this curve'
     bit = 1 << other[order]
@@ -484,39 +448,247 @@ def qual_crossing_graph():
     return bad
 
 
+# ------------------------------------------------------------------ constructed drawings, for crossings()
+FEATURE = 8000.0   # how far out from the page centre, along the x axis, a constructed drawing has its feature
+
+
+def u(degrees): return np.array([math.cos(math.radians(degrees)), math.sin(math.radians(degrees))])
+
+
+def line(p, q):
+    """A straight span from p to q, its handles a third of the way."""
+    p, q = np.asarray(p, float), np.asarray(q, float)
+    return np.stack([p, p + (q - p) / 3, p + 2 * (q - p) / 3, q])[None]
+
+
+def flat(p, q):
+    """A straight span from p to q with zero handles (P1 = P0, P2 = P3), as the drawings' straight arcs have."""
+    p, q = np.asarray(p, float), np.asarray(q, float)
+    return np.stack([p, p, q, q])[None]
+
+
+def poly(points, span=line):
+    return np.concatenate([span(p, q) for p, q in zip(points[:-1], points[1:])])
+
+
+def circle(o, r, a0, a1, most=30.0):
+    """Cubic spans along the circle of radius r about o from angle a0 to a1 (degrees, either way round), each over at
+    most `most` degrees."""
+    k = max(1, math.ceil(abs(a1 - a0) / most))
+    out = []
+    for b0, b1 in zip(np.linspace(a0, a1, k + 1)[:-1], np.linspace(a0, a1, k + 1)[1:]):
+        h = 4 / 3 * math.tan(math.radians(b1 - b0) / 4) * r
+        p0, p3 = o + r * u(b0), o + r * u(b1)
+        out.append(np.stack([p0, p0 + h * u(b0 + 90), p3 - h * u(b1 + 90), p3]))
+    return np.array(out)
+
+
+def parabola(lift, w=48.0, h=48.0):
+    """y = h (x / w)^2 + lift from x = -w to w as one span, its control points integers when w / 3, h / 3 and lift
+    are."""
+    return np.array([[(-w, h + lift), (-w / 3, -h / 3 + lift), (w / 3, -h / 3 + lift), (w, h + lift)]], float)
+
+
+def connector(p, r, exit, way):
+    """The way out from end p of one of a feature's arcs (in the feature's local coordinates, under 100 from its point):
+    out from the point to 100, out to r, round the circle of radius r about the point to angle `exit` (counterclockwise
+    for way 1, clockwise for -1), out to 200, and on to 300 above or below."""
+    th = math.degrees(math.atan2(p[1], p[0]))
+    e = th + way * (way * (exit - th) % 360)
+    end = 200 * u(e)
+    return np.concatenate([line(p, 100 * u(th)), line(100 * u(th), r * u(th)), circle(np.zeros(2), r, th, e),
+                           line(r * u(e), end), line(end, (end[0], math.copysign(300.0, end[1])))])
+
+
+def feature(A, B, page):
+    """Curve 0 of a three-curve drawing (copies turned the SVG's 120 and 240 degrees) holding one feature: arc A of
+    curve 0 near the point FEATURE out along the x axis from the page centre, and arc B that copy 1 is to have there,
+    put into curve 0 turned back 120 degrees. The arcs are in the feature's local coordinates (about the point, x
+    outward, y the way angles grow), each from its left end (x < 0) to its right end (x > 0), under 100 from the point.
+    Curve 0 leaves A's ends downward, toward smaller angles, and copy 1 leaves B's upward, by connector(), A's round a
+    circle of radius 150 and B's of 125: so the connectors cross once, at a right angle, for each end of A that is
+    above B's end on the same side, as seen from the point, and nowhere else. Then curve 0 goes round circles about the
+    page centre to B's ends, turned back."""
+    assert [q[0] < 0 for q in (A[0, 0], A[-1, 3], B[0, 0], B[-1, 3])] == [True, False, True, False]
+    c = page / 2
+    F = np.array([c + FEATURE, c])
+    AL, AR = connector(A[0, 0], 150.0, 255.0, 1), connector(A[-1, 3], 150.0, -75.0, -1)
+    BL, BR = connector(B[0, 0], 125.0, 105.0, -1), connector(B[-1, 3], 125.0, 75.0, 1)
+    here = lambda N: N + F                                  # local coordinates to the page's
+    back = lambda N: rotate(N + F, page, -120.0)            # copy 1's local coordinates to curve 0's on the page
+    angle = lambda q: math.degrees(math.atan2(q[1] - c, q[0] - c))
+    ends = [(here(AR)[-1, 3], back(BR)[-1, 3]), (back(BL)[-1, 3], here(AL)[-1, 3])]
+    right, left = (circle(np.array([c, c]), float(np.hypot(*(q0 - c))), angle(q0), angle(q1), 10.0) for q0, q1 in ends)
+    for arc, (q0, q1) in zip((right, left), ends):          # from q0 to q1 exactly
+        assert np.abs(arc[0, 0] - q0).max() < 1e-6 and np.abs(arc[-1, 3] - q1).max() < 1e-6
+        arc[0, 0], arc[-1, 3] = q0, q1
+    rev = lambda N: N[::-1, ::-1]                           # the same spans the other way
+    N = np.concatenate([here(A), here(AR), right, rev(back(BR)), rev(back(B)), back(BL), left, rev(here(AL))])
+    assert np.array_equal(N[:, 3], np.roll(N[:, 0], -1, 0)), 'not one closed curve'
+    return N
+
+
+def corners(off, alpha, turn_a, turn_b, phi, page):
+    """feature(): A turns turn_a degrees at the point, B turns turn_b degrees at a knot off away from it in direction
+    phi, arriving alpha degrees round from A; both of two straight spans with zero handles, as straight arcs are."""
+    o = off * u(phi)
+    return feature(poly([-50 * u(0), (0.0, 0.0), 50 * u(turn_a)], flat),
+                   poly([o - 50 * u(alpha), o, o + 50 * u(alpha + turn_b)], flat), page)
+
+
+# Corners: (alpha, turn_a, turn_b) -> {phi: crossings of curve 0 with copy 1}, the connectors' 1 or 2 included. Here
+# same turns cross once, or three times when B's knot is off A's in a direction between 0 and turn_a degrees (B
+# crossing A's first span, its second, and its second again); opposite turns cross twice when B's knot is above A's,
+# and not at all when it is below.
+CORNERS = {(3.0, 20.0, 20.0): {37.0: 2, 217.0: 2, 100.0: 2, 300.0: 2},
+           (0.1, 20.0, 20.0): {37.0: 2, 217.0: 2, 100.0: 2, 300.0: 2},
+           (0.01, 5.0, 5.0): {37.0: 2, 217.0: 2},
+           (1.0, 60.0, 60.0): {37.0: 4, 217.0: 2},
+           (0.1, 20.0, -20.0): {37.0: 4, 217.0: 2, 100.0: 4, 300.0: 2}}
+
+
 @qual
-def qual_candidate_pairs():
-    """Replicata: geom.candidate_pairs(points, 0.02, budget=20000) on 4000 random points in the unit
-    square, half of them crowded into a disk of radius 0.01. Expectata: every pair i < j at distance
-    at most 0.02, each exactly once, in batches of fewer than 20000 pairs plus the most neighbours
-    within 0.02 that any one point has (so memory stays bounded however crowded the points are)."""
-    rng = np.random.default_rng(1)
-    crowd = 0.5 + 0.5j + 0.01 * np.sqrt(rng.random(2000)) * np.exp(2j * np.pi * rng.random(2000))
-    pts = np.concatenate([rng.random((2000, 2)), np.stack([crowd.real, crowd.imag], 1)])
-    batches = list(candidate_pairs(pts, 0.02, budget=20000))
-    got = np.concatenate([np.stack(b, 1) for b in batches])
-    d = np.linalg.norm(pts[:, None] - pts[None], axis=2)
-    want = np.argwhere(np.triu(d <= 0.02, 1))
+def qual_crossings_known():
+    """Replicata: crossings.crossings() on constructed curves: the conics venn.py draws for n = 2, 3 and 5; and
+    three-curve drawings, each made by feature() to hold one feature (copy 1's arc near curve 0's): straight spans
+    crossing at the middles of both; a parabola passing 1e-6 above a straight span, touching it, and dipping 1e-8
+    below it; a sharper one dipping 1e-6 below it, crossing it twice 2.8e-5 apart; a cubic crossing a straight span
+    three times; two curves turning at knots (corners, with zero handles, as the drawings' straight arcs have) 1e-9,
+    1e-8, 1e-7 and 1e-6 apart, crossing at 0.01 to 3 degrees; corners 1e-6 apart pointing at each other; a corner and
+    a straight span passing 1e-6 from it, inside the corner and outside it; two curves smooth through knots at one
+    point, crossing at 1e-3 degrees there; a curve with a loop 1, or 1e-4, across; a curve passing 1e-6 from itself,
+    touching itself exactly, and doubling back 1e-6 from itself for 100 units (a hairpin); a span whose control points
+    cross over, which has a cusp; a straight span lying along curve 0's for 70 units; and the first of those drawings
+    with a span of length zero added, or with its last span ending 50 units from its first point. Expectata: for each,
+    as many crossings of curve 0 with itself and with each copy as listed here, one per orbit (for n = 2, one of the two
+    crossings of the circles, which are turns of each other), and no contact, except that where curves touch, at the
+    cusp and along the overlap there is a contact and no crossing is claimed; the straight spans' crossing at t = 1/2 on
+    both; and for the span of length zero and for the curve that does not close, an AssertionError. (Each count was
+    checked with an exact rational verifier, which was undecided only at touches and at the crossing where both curves
+    have knots.)"""
+    import venn
+    page = venn.PAGE
+    deg = lambda n: [venn.turn(k, n) for k in range(n)]
+    plain = line((-50, 80), (50, 80))           # copy 1's arc where the feature is curve 0 with itself
+    lines = feature(line((-48, 0), (48, 0)), line(50 * u(240), 50 * u(60)), page)
+
+    def itself(lift):
+        """Along y = 0 through the point, round, and back as the parabola, right to left."""
+        P = parabola(lift)[:, ::-1]
+        return feature(np.concatenate([line((-80, 0), (55, 0)), poly([(55, 0), (62, 25), P[0, 0]]), P,
+                                       poly([P[-1, 3], (-48, 62), (62, 62)])]), plain, page)
+
+    def loop(w):
+        return feature(np.concatenate([line((-80, 0), (-w, 0)), np.array([[(-w, 0), (2 * w, w), (-2 * w, w), (w, 0)]]),
+                                       line((w, 0), (80, 0))]), plain, page)
+    tilt = np.array([[math.cos(math.radians(1e-3)), math.sin(math.radians(1e-3))],
+                     [-math.sin(math.radians(1e-3)), math.cos(math.radians(1e-3))]])
+    tilted = np.array([(-60, -4), (-40, -1.5), (-20, 0), (0, 0), (20, 0), (40, -1), (60, -3)], float) @ tilt
+    near = lambda sign: np.array([0.0, sign * 1e-6 / math.cos(math.radians(15))])
+    sharp = parabola(-1e-6, 1e-3, 5e-3)        # y = 5000 x^2 - 1e-6, crossing y = 0 at x = +-1.4e-5
+    # (what, curve 0, degrees of its copies, crossings with each copy d = 0 .. n // 2, a contact)
+    cases = [(f'conics for n = {n}', venn.draw_conics(n)[0], deg(n), want, False)
+             for n, want in ((2, (0, 1)), (3, (0, 2)), (5, (0, 4, 2)))]
+    cases += [(what, N, deg(3), want, touch) for what, N, want, touch in (
+        # 1 at the middles, and 1 where the connectors cross
+        ('straight spans crossing at both their middles', lines, (0, 2), False),
+        ('a parabola 1e-6 above a straight span', feature(line((-48, 0), (48, 0)), parabola(1e-6), page), (0, 0),
+         False),
+        ('a parabola touching a straight span (to within the turning\'s rounding)',
+         feature(line((-48, 0), (48, 0)), parabola(0.0), page), (0, 0), True),
+        ('a parabola dipping 1e-8 below a straight span, crossing it twice 1.4e-3 apart',
+         feature(line((-48, 0), (48, 0)), parabola(-1e-8), page), (0, 2), False),
+        ('a sharp parabola dipping 1e-6 below a straight span, crossing it twice 2.8e-5 apart',
+         feature(line((-48, 0), (48, 0)), np.concatenate([line((-48, 48), sharp[0, 0]), sharp,
+                                                          line(sharp[0, 3], (48, 48))]), page), (0, 2), False),
+        # 3, and 1 where the connectors cross
+        ('a cubic crossing a straight span three times',
+         feature(line((-48, 0), (48, 0)), np.array([[(-48, -20), (-16, 40), (16, -40), (48, 20)]], float), page),
+         (0, 4), False),
+        ('corners 1e-6 apart pointing at each other',
+         feature(poly([(-50, -50), (0, 0), (50, -50)], flat), poly([(-50, 50), (0, 1e-6), (50, 50)], flat), page),
+         (0, 0), False),
+        # 2 or none, and 2 where the connectors cross
+        ('a corner and a straight span 1e-6 from it, inside the corner',
+         feature(poly([(-50, 0), (0, 0), 50 * u(30)], flat), line(near(1) - 50 * u(15), near(1) + 50 * u(15)), page),
+         (0, 4), False),
+        ('a corner and a straight span 1e-6 from it, outside the corner',
+         feature(poly([(-50, 0), (0, 0), 50 * u(30)], flat), line(near(-1) - 50 * u(15), near(-1) + 50 * u(15)), page),
+         (0, 2), False),
+        # 2 (at the knots, and 0.007 on), and 2 where the connectors cross
+        ('curves smooth through knots at one point, crossing at 1e-3 degrees',
+         feature(np.array([[(-60, 3), (-40, 1), (-20, 0), (0, 0)], [(0, 0), (20, 0), (40, 2), (60, 6)]], float),
+                 np.stack([tilted[0:4], tilted[3:7]]), page), (0, 4), False),
+        ('a loop 1 across', loop(1.0), (1, 0), False),
+        ('a loop 1e-4 across', loop(1e-4), (1, 0), False),
+        ('a curve passing 1e-6 from itself', itself(1e-6), (0, 0), False),
+        ('a curve touching itself exactly', itself(0.0), (0, 0), True),
+        ('a hairpin', feature(np.concatenate([
+            line((-80, 0), (50, 0)), np.array([[(50, 0), (50 + 1e-6, 0), (50 + 1e-6, 1e-6), (50, 1e-6)]]),
+            line((50, 1e-6), (-50, 2e-6)), poly([(-50, 2e-6), (-50, 40), (70, 40)])]), plain, page), (0, 0), False),
+        ('a span with a cusp', feature(np.array([[(-50, -50), (50, 50), (-50, 50), (50, -50)]], float), plain, page),
+         (0, 0), True),
+        ("a straight span lying along curve 0's for 70 units",
+         feature(line((-48, 0), (48, 0)), poly([(-60, 30), (-35, 0), (35, 0), (60, 30)], flat), page), (0, 0), True))]
+    cases += [(f'corners {off:g} apart, crossing at {alpha:g} degrees, turning {ta:g} and {tb:g}, knots in direction '
+               f'{phi:g}', corners(off, alpha, ta, tb, phi, page), deg(3), (0, want[phi]), False)
+              for off in (1e-9, 1e-8, 1e-7, 1e-6) for (alpha, ta, tb), want in CORNERS.items() for phi in (37.0, 217.0)]
     bad = []
-    if len(got) != len(np.unique(got, axis=0)):
-        bad.append(f'{len(got) - len(np.unique(got, axis=0))} pairs yielded more than once')
-    g, w = {tuple(p) for p in got.tolist()}, {tuple(p) for p in want.tolist()}
-    if g != w:
-        bad.append(f'{len(w - g)} pairs missing, {len(g - w)} pairs yielded that are not within 0.02 or not i < j')
-    most = int((d <= 0.02).sum(1).max())
-    if max(len(b[0]) for b in batches) >= 20000 + most:
-        bad.append(f'a batch of {max(len(b[0]) for b in batches)} pairs, with at most {most} neighbours a point')
+    for what, N, degrees, want, touch in cases:
+        try:
+            X, C = crossings(N, page, degrees)
+        except Exception as e:   # reported as this case's failure, so that the other cases are still checked
+            bad.append(f'{what}: {type(e).__name__} {e}')
+            continue
+        got = tuple(np.bincount(X[:, 0].astype(int), minlength=len(want)).tolist())
+        if (got, len(C) > 0) != (want, touch):
+            bad.append(f'{what}: crossings with each copy {got} and {len(C)} contacts, not {want} and '
+                       f'{"some" if touch else "none"}')
+    on_a = crossings(lines, page, deg(3))[0]
+    on_a = on_a[on_a[:, 1] == 0]                # on curve 0's first span, the straight span A
+    if not (len(on_a) == 1 and np.allclose(on_a[0, [2, 4]], 0.5, rtol=0, atol=1e-12)):
+        bad.append(f'straight spans crossing at both their middles: crossings on the first {on_a.tolist()}, not one at '
+                   f't = 1/2 of both')
+    zero = np.concatenate([lines[:1], np.repeat(lines[1:2, :1], 4, 1), lines[1:]])
+    opened = lines.copy()
+    opened[-1, 3] += 50
+    for what, N in (('a span of length zero', zero), ('a curve that does not close', opened)):
+        try:
+            crossings(N, page, deg(3))
+            bad.append(f'{what}: no AssertionError')
+        except AssertionError:
+            pass
+    return bad
+
+
+@qual
+def qual_crossings_limit():
+    """Replicata: crossings.crossings() on the corners of qual_crossings_known, but with their knots 1e-10 and 3e-10
+    apart, where it cannot always certify a crossing or its absence, and B's knot in two or four directions from A's.
+    Expectata: for each, either a contact or the right count (that of an exact rational verifier, as listed in
+    CORNERS), never a wrong count without a contact."""
+    import venn
+    bad = []
+    for off in (1e-10, 3e-10):
+        for (alpha, ta, tb), want in CORNERS.items():
+            for phi, count in want.items():
+                X, C = crossings(corners(off, alpha, ta, tb, phi, venn.PAGE), venn.PAGE,
+                                 [venn.turn(k, 3) for k in range(3)])
+                got = tuple(np.bincount(X[:, 0].astype(int), minlength=2).tolist())
+                if len(C) == 0 and got != (0, count):
+                    bad.append(f'corners {off:g} apart, at {alpha:g} degrees, turning {ta:g} and {tb:g}, knots in '
+                               f'direction {phi:g}: crossings with each copy {got} and no contact, not (0, {count})')
     return bad
 
 
 @qual
 def qual_svg_matches_cert():
-    """Replicata: read img/venn-NN.svg, sample its curves, find every crossing, label regions by
+    """Replicata: read img/venn-NN.svg, find every crossing of its curves exactly (crossings.py), label regions by
     walking each curve. Expectata: no self-intersections, exactly 2^n - 2 crossings, both curves
     through a crossing agree on its four region labels, and the crossings are exactly the cert's faces.
-    (The crossings are found in one sector, as drawn_faces says, so this also asserts that the curves are the path
-    turned by multiples of 360/n degrees, which qual_svg_symmetric checks too, and that no sampled segment spans 90
-    degrees or more about the page centre, as none comes near it.)"""
+    (The crossings are found as crossings of the path with its turned copies, as drawn_faces says, so this also asserts
+    that the curves are the path turned by multiples of 360/n degrees, which qual_svg_symmetric checks too, and that
+    crossings() leaves no contact, a place where it could certify neither a crossing nor its absence.)"""
     bad = []
     for n in DRAWN:
         npts, faces, mismatched = drawn_faces(svg_path(n), n)
@@ -535,35 +707,77 @@ def qual_svg_matches_cert():
 
 
 @qual
-def qual_smoothing_edges():
-    """Replicata: lay out and smooth 7 as `python3 venn.py draw 7` does, find the intersection of its curves nearest an
-    edge of the sector venn.offenders() looks at (angles 0 to 360/7 degrees about the page centre), and turn curve 0 so
-    that this intersection lies 1e-12 or 1e-13 radians to either side of that edge. Expectata: offenders() finds
-    nothing wrong, every time, as with the drawing unturned: it is the same drawing turned. (The file's angles have 12
-    significant digits, so the copies of an intersection are turned copies of each other only to within about 1e-11
-    radians; a check that kept the intersections it found inside the sector would keep one near an edge twice or not
-    at all.)"""
+def qual_offenders_known():
+    """Replicata: lay out and smooth 7 as `python3 venn.py draw 7` does, and give venn.offenders() its curve 0; then
+    the same curve with a loop 0.01 across put into the middle of one span (curve 0 crossing itself there), and with a
+    loop from the middle of that span back to it instead (curve 0 crossing itself exactly at a knot, where crossings()
+    can certify neither a crossing nor its absence: a contact). Expectata: no offenders for the curve as smoothed; for
+    each loop, exactly the orbits of the two crossings that bound the arc the span is on."""
     import contextlib, io, venn
     n = 7
     with contextlib.redirect_stderr(io.StringIO()):   # smooth() reports its attempts
         knots, kvid, orb, kof, s = venn.plotter_layout(n)
         ctrl = venn.smooth(n, knots, kvid, orb, kof, s)
-    th, c = 2 * math.pi / n, venn.PAGE / 2
-    P = sample(ctrl, float(np.median(np.linalg.norm(ctrl[:, 3] - ctrl[:, 0], axis=1))) / 6)[0]
-    A = np.concatenate([rotate(P, venn.PAGE, venn.turn(k, n)) for k in range(n)])
-    B = np.concatenate([np.roll(rotate(P, venn.PAGE, venn.turn(k, n)), -1, 0) for k in range(n)])
-    cid, sid = np.repeat(np.arange(n), len(P)), np.tile(np.arange(len(P)), n)
-    reach = 2 * float(np.linalg.norm(B - A, axis=1).max())
-    i, j = np.concatenate([np.stack(p, 1) for p in candidate_pairs(0.5 * (A + B), reach)]).T
-    hi, _, t, _, _, _ = segment_hits(A, B, cid, sid, np.full(len(A), len(P)), i, j)
-    X = A[hi] + t[:, None] * (B[hi] - A[hi])
-    angle = np.arctan2(X[:, 1] - c, X[:, 0] - c)
-    off = float((angle - np.round(angle / th) * th)[np.argmin(np.abs(angle - np.round(angle / th) * th))])
-    bad = [] if len(venn.offenders(n, ctrl, kvid, orb, kof, s)) == 0 else ['unturned: offenders found']
-    for eps in (1e-12, -1e-12, 1e-13, -1e-13):
-        got = venn.offenders(n, rotate(ctrl, venn.PAGE, math.degrees(eps - off)), kvid, orb, kof, s)
-        if len(got):
-            bad.append(f'with the intersection {eps:+.0e} rad from the edge, offenders() finds orbits {got.tolist()}')
+    k, w = len(ctrl) // 3, 0.005
+    on = [i for i in range(len(kvid)) if kvid[i] >= 0]         # the knots that are crossings
+    bound = {int(orb[kvid[max(i for i in on if i <= k)]]), int(orb[kvid[min(i for i in on if i > k)]])}
+    L, R = cut(ctrl[k:k + 1], 0.5)                              # span k cut at its middle, p
+    p = L[0, 3]
+    tan = (R[0, 1] - L[0, 2]) / np.linalg.norm(R[0, 1] - L[0, 2])   # the way the curve goes at p
+    nrm = np.array([-tan[1], tan[0]])
+    a, b = p - w * tan, p + w * tan
+    La, Rb = L.copy(), R.copy()
+    La[0, 3], Rb[0, 0] = a, b                                   # ending at a and starting at b instead
+    loop = np.array([[a, a + 3 * w * tan + w * nrm, b - 3 * w * tan + w * nrm, b]])
+    back = np.array([[p, p + w * (2 * tan + nrm), p + w * (-2 * tan + nrm), p]])
+    kv = np.concatenate([kvid[:k + 1], [-1, -1], kvid[k + 1:]])  # two new knots, at no crossing
+    bad = []
+    for what, curve, kvids, want in (
+            ('as smoothed', ctrl, kvid, set()),
+            ('with a loop in span k', np.concatenate([ctrl[:k], La, loop, Rb, ctrl[k + 1:]]), kv, bound),
+            ('with a loop from a knot back to it', np.concatenate([ctrl[:k], L, back, R, ctrl[k + 1:]]), kv, bound)):
+        got = set(venn.offenders(n, curve, kvids, orb, kof, s).tolist())
+        if got != want:
+            bad.append(f'{what}: offenders {sorted(got)}, not {sorted(want)}')
+    return bad
+
+
+@qual
+def qual_svg_defects():
+    """Replicata: drawn_faces(), which qual_svg_matches_cert runs, on copies of img/venn-07.svg whose path has a loop
+    0.01 across put into the middle of one span, or instead a loop from the middle of that span back to it. Expectata:
+    an AssertionError saying how many self-intersections the first has, and one saying how many contacts the second
+    has (curve 0 crossing itself exactly where the loop starts, where crossings() can certify neither a crossing nor
+    its absence)."""
+    text = svg_path(7).read_text()
+    d = re.search(r'<path id="curve" d="([^"]+)"/>', text).group(1)
+    N = nets(d)
+    k, w = len(N) // 3, 0.005
+    L, R = cut(N[k:k + 1], 0.5)                                 # span k cut at its middle, p
+    p = L[0, 3]
+    tan = (R[0, 1] - L[0, 2]) / np.linalg.norm(R[0, 1] - L[0, 2])   # the way the curve goes at p
+    nrm = np.array([-tan[1], tan[0]])
+    a, b = p - w * tan, p + w * tan
+    La, Rb = L.copy(), R.copy()
+    La[0, 3], Rb[0, 0] = a, b                                   # ending at a and starting at b instead
+    loop = np.array([[a, a + 3 * w * tan + w * nrm, b - 3 * w * tan + w * nrm, b]])
+    back = np.array([[p, p + w * (2 * tan + nrm), p + w * (-2 * tan + nrm), p]])
+    fmt = lambda x: f'{x:.6f}'.rstrip('0').rstrip('.')
+    path = lambda M: ' '.join([f'M{fmt(M[0, 0, 0])},{fmt(M[0, 0, 1])}'] + [
+        f'C{fmt(x1)},{fmt(y1)} {fmt(x2)},{fmt(y2)} {fmt(x3)},{fmt(y3)}' for (x1, y1), (x2, y2), (x3, y3) in M[:, 1:].tolist()]
+        + ['Z'])
+    bad = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for what, M, want in (('a loop in a span', np.concatenate([N[:k], La, loop, Rb, N[k + 1:]]), 'self-intersections'),
+                              ('a loop from a knot back to it', np.concatenate([N[:k], L, back, R, N[k + 1:]]), 'contacts')):
+            f = Path(tmp) / 'venn-07.svg'
+            f.write_text(text.replace(d, path(M)))
+            try:
+                drawn_faces(f, 7)
+                bad.append(f'{what}: no AssertionError')
+            except AssertionError as e:
+                if want not in str(e):
+                    bad.append(f'{what}: AssertionError {e}, not about {want}')
     return bad
 
 

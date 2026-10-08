@@ -159,7 +159,7 @@ PNG_PX = 1600
 # unchanged from github.com/dzoba/venn17 at commit e89d6f6f8cf17294c5b32e0406088684557fbde4 (MIT, see LICENSE).
 sys.path.insert(0, str(HERE / 'vendor' / 'venn17'))
 import plotter_svg  # noqa: E402
-from geom import candidate_pairs, rotate, sample, segment_hits  # noqa: E402
+from crossings import crossings  # noqa: E402
 
 
 def stroke(n): return 18.0 / n * PAGE / PNG_PX
@@ -276,73 +276,39 @@ def smooth(n, knots, kvid, orb, kof, s):
 
 def offenders(n, ctrl, kvid, orb, kof, s):
     """The orbits of the crossings at which the drawing goes wrong: curve 0, the control nets ctrl with the crossing
-    kvid of each knot, and its turned copies, sampled exactly as quals.py samples the SVG. Every crossing must be
-    where its two curves cross exactly once, and nothing else may cross. An intersection is that crossing when its two
-    segments' spans both end at the same crossing knot. The offenders are the crossings bounding the arcs at a knot
-    that gets other than one such intersection, and those bounding both arcs of any other intersection or degenerate
-    contact.
+    kvid of each knot, and its turned copies, turned exactly as the SVG will turn them. Every crossing must be where its
+    two curves cross exactly once, and nothing else may cross. crossings() finds each orbit of the drawing's crossings
+    once, exactly, as a crossing of curve 0 with a copy, at span + t along each; it is that crossing when the knots
+    nearest it along both curves are the same crossing of the drawing. The offenders are the crossings bounding the
+    arcs at a knot that gets other than one such crossing, and those bounding both arcs of any other crossing (curve 0
+    crossing itself, too) or contact.
 
-    By the symmetry it is enough to look at one sector, the angles 0 to 360/n degrees about the page centre (in the
-    SVG's coordinates, y down): every intersection is a turned copy of one in it, both of whose segments meet it. So
-    this samples curve 0 once, takes the segments of each turned copy that meet the sector, finds the intersections
-    among them, and keeps one of each set of turned copies. (Not those that lie in the sector: the file's angles have
-    12 significant digits, so the copies are turned copies of each other only to within about 1e-11 radians, and one
-    near an edge would be kept twice or not at all.) The crossings of the whole drawing are told apart by naming crossing
-    rho^j(v), v a crossing of curve 0, orb[v] n + (kof[v] + j) mod n, where rho^j turns curve 0 as the copy is (see
-    plotter_layout)."""
-    c, theta, inverse = PAGE / 2, 2 * math.pi / n, pow(s, -1, n)
-    pts, span = sample(ctrl, float(np.median(np.linalg.norm(ctrl[:, 3] - ctrl[:, 0], axis=1))) / 6)
+    The crossings of the whole drawing are told apart by naming crossing rho^j(v), v a crossing of curve 0,
+    orb[v] n + (kof[v] + j) mod n, where rho^j turns curve 0 as the copy is (see plotter_layout)."""
+    X, C = crossings(ctrl, PAGE, [turn(k, n) for k in range(n)])
     m, ar = len(kvid), np.arange(len(kvid))
-    ends = np.stack([kvid, np.roll(kvid, -1)], 1)[span]   # knot crossings at each segment's span's ends, or -1
-    # the crossings bounding each segment's arc: the last crossing knot at or before its span's start, and the first
-    # one after it (wrapping round the closed curve)
+    d = X[:, 0].astype(np.int64)
+    ka, kb = (np.round(X[:, i] + X[:, i + 1]).astype(np.int64) % m for i in (1, 3))   # the knots nearest each crossing
+    # the crossings bounding each span's arc: the last crossing knot at or before its start, and the first one after it
+    # (wrapping round the closed curve)
     before = kvid[np.maximum.accumulate(np.where(kvid >= 0, ar, -1))]
     nxt = np.minimum.accumulate(np.where(kvid >= 0, ar, m)[::-1])[::-1]
     nxt = np.append(nxt[1:], m)
     after = kvid[np.where(nxt < m, nxt, int(np.flatnonzero(kvid >= 0)[0]))]
-    arcs = np.stack([before, after], 1)[span]
-    # the segments of copy k that meet the sector, from the angles each segment spans (none passes the centre)
-    A, B = pts, np.roll(pts, -1, 0)
-    pa, pb = np.arctan2(A[:, 1] - c, A[:, 0] - c), np.arctan2(B[:, 1] - c, B[:, 0] - c)
-    d = np.remainder(pb - pa + math.pi, 2 * math.pi) - math.pi
-    lo, width = np.where(d >= 0, pa, pb), np.abs(d)
-    seg = [np.flatnonzero((beta <= theta + 1e-9) | (beta + width >= 2 * math.pi - 1e-9))
-           for beta in (np.remainder(lo + math.radians(turn(k, n)), 2 * math.pi) for k in range(n))]
-    copy = np.concatenate([np.full(len(i), k, np.int16) for k, i in enumerate(seg)])
-    A2 = np.concatenate([rotate(A[i], PAGE, turn(k, n)) for k, i in enumerate(seg)])
-    B2 = np.concatenate([rotate(B[i], PAGE, turn(k, n)) for k, i in enumerate(seg)])
-    seg = np.concatenate(seg)
-    j = (-copy.astype(np.int64) * inverse) % n
+    arcs = np.stack([before, after], 1)
 
-    def name(x):   # crossings of curve 0 (or -1) as named in the whole drawing, for each copy's segment
-        x = x[seg]
-        return np.where(x >= 0, orb[np.maximum(x, 0)] * n + (kof[np.maximum(x, 0)] + j[:, None]) % n, -1)
-    E, R = name(ends), name(arcs)
-    block = 2_000_000                       # candidate pairs tested at a time, to bound memory
-    nseg = np.full(len(seg), len(pts), np.int32)
-    hits = [segment_hits(A2, B2, copy, seg, nseg, i[q:q + block], jj[q:q + block])
-            for i, jj in candidate_pairs(0.5 * (A2 + B2), float(np.linalg.norm(B - A, axis=1).max()) * 1.0001)
-            for q in range(0, len(i), block)]
-    hi, hj, _, _, ti, tj = (np.concatenate(h) for h in zip(*hits))
-    # an intersection is found once for each turned copy of it whose segments both meet the sector, which near its
-    # edges is twice: keep one of each, naming it by the two segments of curve 0 it lies on and how many sectors apart
-    # their copies are, which its turned copies share
-    M, gap = len(pts), (copy[hj].astype(np.int64) - copy[hi]) % n
-    first = np.unique(np.minimum((gap * M + seg[hi]) * M + seg[hj], ((n - gap) % n * M + seg[hj]) * M + seg[hi]),
-                      return_index=True)[1]
-    hi, hj = hi[first], hj[first]
-    ea, eb = E[hi], E[hj]
-    # the knot two crossing segments share, or -1 (in a simple Venn diagram no region has only two
-    # sides, so two curves never run between the same two crossings and at most one of these four
-    # comparisons can hold with id >= 0)
-    shared = np.max(np.stack([np.where((ea[:, x] == eb[:, y]) & (ea[:, x] >= 0), ea[:, x], -1)
-                              for x in (0, 1) for y in (0, 1)]), 0)
-    knot = (copy[hi] != copy[hj]) & (shared >= 0)
-    hit = np.bincount(shared[knot] // n, minlength=len(orb) // n)
-    stray = np.concatenate([R[hi[~knot]], R[hj[~knot]], R[ti], R[tj]]).ravel() // n
+    def name(v, k):   # crossing v of curve 0 (or -1), as copy k shows it, named in the whole drawing
+        j = (-k * pow(s, -1, n)) % n
+        return np.where(v >= 0, orb[np.maximum(v, 0)] * n + (kof[np.maximum(v, 0)] + j) % n, -1)
+    na = name(kvid[ka], 0)
+    knot = (d > 0) & (na >= 0) & (na == name(kvid[kb], d))
+    hit = np.bincount(orb[kvid[ka[knot]]], minlength=len(orb) // n)
+    spans = np.concatenate([X[~knot][:, [1, 3]].ravel(), C[:, [1, 3]].ravel()]).astype(np.int64)
+    stray = orb[arcs[spans].ravel()]
     # an orbit whose crossing is crossed other than once is fixed by straightening the arcs at it, which takes the
     # crossings at both ends of each of those arcs
     miss = np.flatnonzero(hit != 1)
+    ends = np.stack([kvid, np.roll(kvid, -1)], 1)
     at_miss = arcs[np.isin(np.where(ends >= 0, orb[np.maximum(ends, 0)], -1), miss).any(1)]
     return np.unique(np.concatenate([miss, orb[at_miss.ravel()], stray]))
 
