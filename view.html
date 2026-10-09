@@ -32,15 +32,15 @@
   /* The controls: along the top, where you are (back arrow, number) and the tools (SVG link, zoom buttons, turn button);
      along the bottom, the swatches with their checkboxes, or in a landscape window a column of them along the right
      edge. At zoom 1 the drawing fits in the space they leave (area()), so that none of them covers it. */
-  /* Narrow screens get less space between and around them (clamp), so the top row fits 320 pixels; narrower still,
-     it wraps, and area() makes room below it. */
+  /* Narrow screens get less space between and around them (clamp), so the top row fits 375 pixels, a common phone's
+     width, even with a touch screen's larger controls; narrower, it wraps, and area() makes room below it. */
   #top, #curves { position: fixed; left: clamp(0.5rem, 3vw, 1rem); right: clamp(0.5rem, 3vw, 1rem); pointer-events: none; }   /* drags between controls reach the drawing */
   #top > *, .stop > * { pointer-events: auto; }
   #top { top: 1rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: clamp(0.3rem, 2vw, 0.7rem); }
   #where, #tools { display: flex; align-items: center; gap: clamp(0.25rem, 1.5vw, 0.5rem); }
   h1 { margin: 0; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); font-weight: 500; font-size: 2rem; line-height: 1; }
   #raw { margin-right: 0.3rem; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); line-height: 1; }
-  #curves { bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; }
+  #curves { bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: center; gap: clamp(0.25rem, 1.5vw, 0.5rem); }
   .stop { display: flex; flex-direction: column; align-items: center; }   /* a curve's swatch, its checkbox under it */
   @media (orientation: landscape) {   /* in vertical writing, a flex row wraps into columns that size right everywhere */
     #curves { top: 4.5rem; left: auto; writing-mode: vertical-rl; }
@@ -76,8 +76,10 @@
   }
   @media (hover: hover) { .icon:hover { border-color: var(--ink); } }   /* on a touch screen a tap would leave it on */
   .icon svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  #turn { font: inherit; width: auto; min-width: 2.5rem; }   /* its face, τ/n, in the page's font, and wide enough for it */
   @media (any-pointer: coarse) {   /* a finger needs 44 pixels to aim at, Apple's guideline (touchscreen laptops too) */
     #curves button, .icon, .stop label { width: 2.75rem; height: 2.75rem; }
+    #turn { min-width: 2.75rem; }
     #raw { display: grid; place-items: center; min-width: 2.75rem; height: 2.75rem; }
   }
   #status, #slow, #error {                  /* hung just below the top row, wherever it ends */
@@ -105,7 +107,7 @@
     <button id="in" class="icon" type="button" title="Zoom in"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M8 3v10"/></svg></button>
     <button id="out" class="icon" type="button" title="Zoom out"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
     <button id="fit" class="icon" type="button" title="Reset the zoom"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
-    <button id="turn" class="icon latin" type="button" title="Rotate 1/n of a full turn" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.67 9.79A5 5 0 1 0 4.96 4.96L3.9 6M3.9 3v3h3"/></svg></button>
+    <button id="turn" class="icon" type="button" title="Rotate 1/n of a full turn" disabled></button>
   </div>
   <p id="status" role="status">Loading full image…</p>
   <p id="slow" role="status" hidden>Apparently Firefox is bad at showing this smoothly while panning/zooming.</p>
@@ -146,12 +148,14 @@ let stroke = 0                         // the drawing's stroke-width, in SVG uni
 let shown = n - 1                      // the curves shown are 0 to shown
 let sliding = null                     // the pointer sliding along the swatches (slide()), while one is
 let lands = []                         // lands[i]: the curve curve i lands on in a turn (landing(), once loaded)
+let turning = Promise.resolve()        // the turns clicked for (turn()), each made once the one before it is done
 const region = document.createElement('div')   // the shading (shade()), added to #picture after the curves
 region.id = 'region'
 region.setAttribute('aria-hidden', 'true')     // the checkboxes say what it shows
 
 document.title = `${n} · ${document.title}`
 document.getElementById('n').textContent = n
+document.getElementById('turn').textContent = `τ/${n}`   // the turn it makes: τ, a full turn, over n
 document.getElementById('back').href = `index.html#n${n}`
 document.getElementById('raw').href = file
 svg.setAttribute('role', 'img')
@@ -227,16 +231,16 @@ function shade() {
 function landing(angles) {
   const gap = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180)
   const to = angles.map(a => angles.findIndex(b => gap(b, a - 360 / n) < 1e-6))
-  if (String([...to].sort((a, b) => a - b)) !== String([...to.keys()])) throw new Error(`turned by ${angles} degrees, curves land on ${to}`)
+  const got = [...to].sort((a, b) => a - b), want = [...to.keys()]
+  if (String(got) !== String(want)) throw new Error(`${angles}: ${got} ≠ ${want}`)   // the angles, and where they land
   return to
 }
 
 // Turn the shading by 1/n of a full turn anticlockwise about the page's centre (#region's transform-origin, which
 // redraw() keeps there) over TURN ms; then check the boxes of the curves the checked ones land on, which shades the
-// region the turned shading covers, and once that's drawn, drop the turn. Meanwhile the button is disabled.
+// region the turned shading covers, and once that's drawn, drop the turn. A click meanwhile makes another turn, after
+// this one: the clicks queue up (turning), so the button needn't be disabled, which would drop the focus.
 async function turn() {
-  const button = document.getElementById('turn')
-  button.disabled = true
   const spin = region.animate([{ transform: 'rotate(0deg)' }, { transform: `rotate(${-360 / n}deg)` }],
                               { duration: TURN, easing: 'ease-in-out', fill: 'forwards' })
   await spin.finished
@@ -244,9 +248,8 @@ async function turn() {
   lands.forEach((j, i) => { checks[j].checked = was[i] })
   await shade()
   spin.cancel()
-  button.disabled = false
 }
-document.getElementById('turn').addEventListener('click', turn)
+document.getElementById('turn').addEventListener('click', () => { turning = turning.then(turn) })
 
 // Where the page goes at zoom 1: the square that fits below the controls along the top and clear of the swatches (a
 // row along the bottom, or, as the CSS puts them in a landscape window, a column along the right edge), centred there;
@@ -426,6 +429,9 @@ function curves(text) {
   }) }
 }
 
+// The drawing's file, its bytes, fetched once: the worker reads them (painter()), and for SVG paths the page too
+const fetched = () => fetch(file).then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status)))   // just the status: HTTP/2 has no status text
+
 // The curves as SVG paths, which the browser draws anew whenever redraw() sets the SVG's viewBox; the worker draws the
 // shading alone (painter(-1)). Loaded once both the paths and the worker's first drawing are.
 function svgRenderer() {
@@ -434,15 +440,15 @@ function svgRenderer() {
     show: k => svg.querySelectorAll('path').forEach((p, j) => { p.style.display = j <= k ? '' : 'none' }),
     redraw: paint.redraw,
     shade: paint.shade,
-    load: () => Promise.all([fetch(file)
-      .then(r => r.ok ? r.text() : Promise.reject(new Error(r.status)))   // just the status: HTTP/2 has no status text
-      .then(text => {
-        const { paths, angles } = curves(text)
-        stroke = Number(paths[0].getAttribute('stroke-width'))
-        svg.replaceChildren(...paths)
-        redraw()
-        return { colours: paths.map(p => p.getAttribute('stroke')), angles }
-      }), paint.first]).then(([loaded]) => loaded),
+    load: () => Promise.all([fetched().then(bytes => {
+      const text = new TextDecoder().decode(bytes)   // before send() hands the bytes over to the worker
+      paint.send(bytes)
+      const { paths, angles } = curves(text)
+      stroke = Number(paths[0].getAttribute('stroke-width'))
+      svg.replaceChildren(...paths)
+      redraw()
+      return { colours: paths.map(p => p.getAttribute('stroke')), angles }
+    }), paint.first]).then(([loaded]) => loaded),
   }
 }
 
@@ -457,19 +463,19 @@ function canvasRenderer() {
     },
     redraw: paint.redraw,
     shade: paint.shade,
-    load: () => paint.first.then(data => {
+    load: () => Promise.all([fetched().then(paint.send), paint.first]).then(([, data]) => {
       thumb.remove()
       return data
     }),
   }
 }
 
-// The worker, canvas.js, which loads the file itself and draws each view redraw() asks for: curves 0 to k (none, for
-// k = -1) on a canvas of its own, and the shading on another, then posts back the drawings, ImageBitmaps, for the
-// canvases here to show, one in #picture (after the SVG) and one in #region. Until new drawings arrive the ones before
-// stay, placed by place() where the view last drawn shows them, so that the picture's transform moves them as it moves
-// the SVG. The first drawing comes once the worker has loaded the file; if it can't, an error. shade() returns when the
-// shading it asks for is shown.
+// The worker, canvas.js, which reads the file's bytes, handed over by send() (so that the browser downloads the file
+// once), and draws each view redraw() asks for: curves 0 to k (none, for k = -1) on a canvas of its own, and the
+// shading on another, then posts back the drawings, ImageBitmaps, for the canvases here to show, one in #picture (after
+// the SVG) and one in #region. Until new drawings arrive the ones before stay, placed by place() where the view last
+// drawn shows them, so that the picture's transform moves them as it moves the SVG. The first drawing comes once the
+// worker has read the file; if it can't, an error. shade() returns when the shading it asks for is shown.
 function painter(k) {
   const canvas = document.createElement('canvas'), bitmap = canvas.getContext('bitmaprenderer')
   const shading = document.createElement('canvas'), shaded = shading.getContext('bitmaprenderer')
@@ -479,6 +485,10 @@ function painter(k) {
   let waiting = []                       // [view number, resolve] for each shade() until that view, or a later one, is shown
   let at = { x: 0, y: 0, s: 1 }          // the canvases' drawings: page point (x, y) at their top left, s page units to
                                          // a CSS pixel (any, until there is a drawing)
+  // send() posts the worker the file's bytes, handing them over; it takes its first message for them, so each view
+  // waits until they are sent
+  let send = null
+  const sent = new Promise(ok => { send = bytes => ok(worker.postMessage(bytes, [bytes])) })
   canvas.setAttribute('aria-hidden', 'true')   // the SVG is the image to a screen reader
   picture.append(canvas)
   region.append(shading)
@@ -487,7 +497,7 @@ function painter(k) {
     for (const c of [canvas, shading]) c.style.transform = `translate(${(at.x - x) / s}px, ${(at.y - y) / s}px) scale(${at.s / s})`
   }
   const first = new Promise((ok, fail) => {   // the first drawing shown, giving the curves' colours and angles
-    worker = new Worker(`canvas.js?${new URLSearchParams({ file, n })}`)
+    worker = new Worker(`canvas.js?${new URLSearchParams({ n })}`)
     // an error, before the first drawing or after it, shows the error (a worker's own error event, as when canvas.js
     // itself can't be loaded, has no message to speak of, so it says where it came from)
     const broke = e => {
@@ -514,16 +524,18 @@ function painter(k) {
   const p = {
     k,
     first,
+    send,
     redraw() {
       const a = area(), s = scale(a, view.z)
+      const job = { x: view.cx - a.x * s, y: view.cy - a.y * s, s, fit: scale(a, 1), w: stage.clientWidth,
+                    h: stage.clientHeight, dpr: devicePixelRatio, k: p.k, inside, seq: ++asked,
+                    colour: getComputedStyle(document.documentElement).getPropertyValue('--line').trim() }
       place()
-      worker.postMessage({ x: view.cx - a.x * s, y: view.cy - a.y * s, s, fit: scale(a, 1), w: stage.clientWidth,
-                           h: stage.clientHeight, dpr: devicePixelRatio, k: p.k, inside, seq: ++asked,
-                           colour: getComputedStyle(document.documentElement).getPropertyValue('--line').trim() })
+      sent.then(() => worker.postMessage(job))
     },
-    shade(i) {
+    shade(i) {   // the worker's drawings alone: the page's redraw() would draw the SVG anew too (19's took WebKit 0.2 s)
       inside = i
-      redraw()
+      p.redraw()
       return new Promise(done => waiting.push([asked, done]))
     },
   }

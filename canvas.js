@@ -1,10 +1,11 @@
 'use strict'
 // The worker that draws, for view.html, a drawing too big for SVG paths (23's: see view.html's canvasRenderer()), and
-// the shading (view.html's shade()) of every drawing. canvas.js?file=F&n=N fetches F, the SVG of drawing N, reads it
-// (parse()), cuts curve 0 into cells (cells()) and puts its spans in a tree of boxes (tree()). Each message from the
-// page is then a view to draw: draw() draws its curves on a canvas of its own and the shading on another, and posts the
-// page the drawings, ImageBitmaps; a newer view stops a drawing still under way. If the file can't be read, it posts
-// the page the error.
+// the shading (view.html's shade()) of every drawing. canvas.js?n=N takes the page's first message for the bytes of
+// the SVG of drawing N (the page fetches it, and hands it over, so that the browser downloads it once), reads them
+// (parse()), cuts curve 0 into cells (cells()) and puts its spans in a tree of boxes (tree()). Each message after it is
+// a view to draw: draw() draws its curves on a canvas of its own and the shading on another, and posts the page the
+// drawings, ImageBitmaps; a newer view stops a drawing still under way. If the file can't be read, it posts the page
+// the error.
 const PAGE = 51200, MID = PAGE / 2     // the side of every drawing's square page, and its centre (venn.py's PAGE)
 const G = 64                           // the cells: a G by G grid of the page
 const BATCH = 64                       // ms a batch of drawing takes, about; between batches the worker looks for views
@@ -273,9 +274,11 @@ function draw({ colours, angles, width, xy, tree, cells: { paths, boxes, spans }
   setTimeout(batch)
 }
 
-const drawing = fetch(new URL(params.get('file'), location.href))
-  .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status)))   // just the status, as view.html says it
+// The first message, the file's bytes, read; and the views, every message after it, drawn once it is
+const drawing = new Promise(ok => addEventListener('message', ({ data }) => {
+  onmessage = ({ data }) => drawing.then(d => draw(d, data))   // not called for this message, which is being handled
+  ok(data)
+}, { once: true }))
   .then(b => parse(new Uint8Array(b), Number(params.get('n'))))
   .then(d => ({ ...d, cells: cells(d.xy), tree: tree(d.xy) }))
 drawing.catch(e => postMessage({ error: e.message }))
-onmessage = ({ data }) => drawing.then(d => draw(d, data))
