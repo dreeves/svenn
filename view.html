@@ -37,7 +37,10 @@
      stops fit below the top row of a 320 by 568 phone. */
   #top, #curves { position: fixed; left: clamp(0.5rem, 3vw, 1rem); right: clamp(0.5rem, 3vw, 1rem); pointer-events: none; }   /* drags between controls reach the drawing */
   #top > *, .stop > * { pointer-events: auto; }
-  #top { top: 1rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: clamp(0.3rem, 2vw, 0.7rem); }
+  /* Over the stops (z-index), so that the notes hung below its row (#status, #slow, #error) show over a column of them
+     reaching up beside the row, as on a touch screen in a landscape window; the notes take no pointer, so the stops
+     under them still do */
+  #top { z-index: 1; top: 1rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: clamp(0.3rem, 2vw, 0.7rem); }
   #where, #tools { display: flex; align-items: center; gap: clamp(0.25rem, 1.5vw, 0.5rem); }
   h1 { margin: 0; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); font-weight: 500; font-size: 2rem; line-height: 1; }
   #raw { margin-right: 0.3rem; padding: 0 0.3rem; border-radius: 0.3rem; background: var(--paper); line-height: 1; }
@@ -63,7 +66,20 @@
   /* its curve is hidden: fade the fill, not the opacity, which would fade the focus ring too */
   #curves button[aria-pressed="false"] { background: color-mix(in srgb, var(--colour, var(--line)) 25%, var(--paper)); }
   #curves button:disabled { cursor: default; }
-  .stop label { display: grid; place-items: center; width: 2rem; height: 2rem; cursor: pointer; }   /* the checkbox's target */
+  /* The slider's knob (slide()): the swatch of the last curve shown, the last one pressed, drawn larger and ringed in
+     --ink inside its border, where the ring stays apart from the focus ring, an outline beyond the border. Larger by a
+     transform, which moves no stop, and by 15%: a touch screen's swatch grows 3.3 pixels a side, less than the 0.25rem
+     between its stops */
+  #curves .stop:not(:has(+ .stop > [aria-pressed="true"])) > [aria-pressed="true"] {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 1px var(--line), inset 0 0 0 2px var(--ink);
+  }
+  @media (hover: hover) {   /* a hand to grab the knob with, and grabbing wherever it goes while it slides (.sliding) */
+    #curves button:enabled { cursor: grab; }
+    .sliding * { cursor: grabbing !important; }
+  }
+  /* the checkbox's target; positioned, so that it lies over the knob where the knob grows into it, and keeps all of it */
+  .stop label { position: relative; display: grid; place-items: center; width: 2rem; height: 2rem; cursor: pointer; }
   .stop input { width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--ink); cursor: inherit; }
   .stop label:has(:disabled) { cursor: default; }
   :root { --icon: 2.5rem; }   /* an icon button's side (.icon) */
@@ -82,10 +98,7 @@
   .icon:disabled { color: var(--muted); cursor: default; }   /* greyed out: the turn button, until the drawing arrives */
   @media (hover: hover) { .icon:not(:disabled):hover { border-color: var(--ink); } }   /* on a touch screen a tap would leave it on */
   .icon svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-  /* Its face, τ/n, in the page's font, and wide enough for it. Without that font, in the browser's serif, not the
-     page's fallbacks: with Georgia, Firefox drew τ as a missing glyph's box on a Mac with an old Georgia (2.05, no
-     Greek) installed beside the system's (5.00) */
-  #turn { font: inherit; font-family: "EB Garamond", serif; width: auto; min-width: var(--icon); }
+  #turn { font: inherit; width: auto; min-width: var(--icon); }   /* its face, τ/n, in the page's font, and wide enough for it */
   @media (any-pointer: coarse) {   /* a finger needs 44 pixels to aim at, Apple's guideline (touchscreen laptops too) */
     :root { --icon: 2.75rem; }
     #curves button, .stop label { width: 2.75rem; height: 2.75rem; }
@@ -93,6 +106,7 @@
   }
   #status, #slow, #error {                  /* hung just below the top row, wherever it ends */
     position: absolute;
+    pointer-events: none;
     top: calc(100% + 0.5rem);
     left: 0;
     right: 0;
@@ -120,7 +134,7 @@
   </div>
   <p id="status" role="status">Loading full image…</p>
   <p id="slow" role="status" hidden>Apparently Firefox is bad at showing this smoothly while panning/zooming.</p>
-  <!-- shown if the drawing can't be loaded; the script fills it in: "Couldn't load <file> (<what went wrong>)" -->
+  <!-- shown if the drawing can't be loaded, drawn or turned; the script fills it in: "Couldn't load <file> (<what went wrong>)" -->
   <p id="error" role="alert" hidden></p>
 </header>
 <nav id="curves" aria-label="Curves"></nav>
@@ -187,6 +201,7 @@ const stops = Array.from({ length: n }, (_, i) => {
   b.addEventListener('pointerdown', e => {
     if (e.button !== 0) return         // only the main button slides, as only it drags the drawing
     sliding = e.pointerId
+    document.documentElement.classList.add('sliding')   // the cursor grabbing, wherever it goes (CSS)
     show(i)
   })
   check.type = 'checkbox'
@@ -249,7 +264,9 @@ function landing(angles) {
 // redraw() keeps there) over TURN ms; then check the boxes of the curves the checked ones land on, which shades the
 // region the turned shading covers, and once that's drawn, drop the turn. A click meanwhile makes another turn, after
 // this one: the clicks queue up (turning), so the button needn't be disabled, which would drop the focus. A turn that
-// fails shows the error, and no turn is made after it.
+// fails (its animation cancelled, say) shows the error, and no turn is made after it. One whose drawing the worker
+// can't draw shows the worker's error, and waits: it ends, and the turns queued after it are made, once a later
+// drawing arrives (one asked for by a zoom, say).
 async function turn() {
   const spin = region.animate([{ transform: 'rotate(0deg)' }, { transform: `rotate(${-360 / n}deg)` }],
                               { duration: TURN, easing: 'ease-in-out', fill: 'forwards' })
@@ -267,16 +284,16 @@ document.getElementById('turn').addEventListener('click', () => {
 // Where the page goes at zoom 1: the square that fits below the controls along the top and clear of the swatches (a
 // row along the bottom, or, as the CSS puts them in a landscape window, a column along the right edge), centred there;
 // but never less than half the window's shorter side, so that a window too short for the controls still shows the
-// drawing, overlapping them, and then, if that's wider than the space left of the column, from the window's left
-// edge rather than past it (as on a phone on its side at 568 by 320). (x, y) is its centre and side its side, in CSS
-// pixels.
+// drawing, overlapping them, and then never past the window's left or top edge: from that edge where centring it
+// would put it past (as at 23 on a touch screen on its side at 568 by 320, or upright at 400 by 500). (x, y) is its
+// centre and side its side, in CSS pixels.
 function area() {
   const w = stage.clientWidth, h = stage.clientHeight, t = document.getElementById('top').getBoundingClientRect().bottom
   const c = document.getElementById('curves'), r = c.getBoundingClientRect()
   const column = getComputedStyle(c).writingMode !== 'horizontal-tb'
   const right = column ? r.left : w, bottom = column ? h : r.top
   const side = Math.max(Math.min(right, bottom - t), Math.min(w, h) / 2)
-  return { x: Math.max(right, side) / 2, y: (t + bottom) / 2, side }
+  return { x: Math.max(right, side) / 2, y: Math.max(t + bottom, side) / 2, side }
 }
 
 // SVG units per CSS pixel at zoom z
@@ -352,6 +369,7 @@ function release(id) {
   held.delete(id)
   stage.classList.toggle('held', held.size > 0)
   sliding = null
+  document.documentElement.classList.remove('sliding')
 }
 stage.addEventListener('pointerdown', e => {
   if (e.button !== 0) return           // only the main button drags (a finger and a pen's tip count as it)
@@ -515,12 +533,16 @@ function painter(k) {
   const first = new Promise((ok, fail) => {   // the first drawing shown, giving the curves' colours and angles
     worker = new Worker(`canvas.js?${new URLSearchParams({ n })}`)
     // an error, before the first drawing or after it, shows the error. An error event of the worker's own is shown as
-    // from canvas.js, with its message, or its type, "error", when it has none (when canvas.js itself can't be loaded)
+    // from canvas.js, with its message, or its type, "error", when it has none (when canvas.js itself can't be loaded);
+    // shown, it is cancelled, so that the browser doesn't report it as uncaught as well
     const broke = e => {
       failed(e)
       fail(e)
     }
-    worker.addEventListener('error', e => broke(new Error(`canvas.js: ${e.message ?? e.type}`)))
+    worker.addEventListener('error', e => {
+      e.preventDefault()
+      broke(new Error(`canvas.js: ${e.message ?? e.type}`))
+    })
     worker.addEventListener('message', ({ data }) => {
       if ('error' in data) return broke(new Error(data.error))
       for (const [c, context, b, r] of [[canvas, bitmap, data.bitmap, data.r], [shading, shaded, data.shading, data.rs]]) {

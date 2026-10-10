@@ -1,6 +1,7 @@
-// A qual of canvas.js's outline() without a browser (quals.py: qual_canvas_outline). quals.py runs this and reads its
+// A qual of canvas.js's outline() without a browser (quals.py: qual_outline). quals.py runs this and reads its
 // output: it runs canvas.js in a node vm, with a Path2D that records its pieces and stand-ins for what else canvas.js
-// touches as it loads, and prints {n: [problem, ...]} as JSON for each drawing n given.
+// touches (canvases that draw nothing, a setTimeout that calls at once, a postMessage that keeps what it is given), and
+// prints {n: [problem, ...]} as JSON for each drawing n given.
 //
 // Usage: node tools/outline_quals.mjs N ...
 import assert from 'node:assert/strict'
@@ -24,21 +25,46 @@ class Path2D {
   bezierCurveTo(...p) { this.pieces.push(['C', ...p]) }
   closePath() {}
 }
-const context = vm.createContext({ Path2D, OffscreenCanvas: class { getContext() { return {} } }, location: { search: '' },
-                                   addEventListener() {}, postMessage() {}, URLSearchParams, TextEncoder, TextDecoder })
+// A 2D context that draws nothing: every property can be set, and every method does nothing (getImageData() gives a
+// pixel)
+const nothing = new Proxy({}, { get: (_, k) => k === 'getImageData' ? () => ({ data: [0, 0, 0, 0] }) : () => {}, set: () => true })
+class OffscreenCanvas {
+  getContext() { return nothing }
+  transferToImageBitmap() { return {} }
+}
+const posted = []                     // what canvas.js posts the page
+const context = vm.createContext({ Path2D, OffscreenCanvas, location: { search: '' }, addEventListener() {},
+                                   postMessage: m => posted.push(m), setTimeout: f => f(), performance: { now: () => 0 },
+                                   URLSearchParams, TextEncoder, TextDecoder })
 vm.runInContext(await readFile(path.join(ROOT, 'canvas.js'), 'utf8'), context)
-const { parse, tree, outline } = vm.runInContext('({ parse, tree, outline })', context)
+const { parse, tree, outline, draw } = vm.runInContext('({ parse, tree, outline, draw })', context)
+// draw()'s calls of outline() go through this, which keeps the tol of each (canvas.js's outline is the vm's global)
+const tols = []
+context.outline = (xy, t, view, tol) => {
+  tols.push(tol)
+  return outline(xy, t, view, tol)
+}
 
 // Point t of the cubic span whose control points are c
 const bezier = (c, t) => [0, 1].map(o => (1 - t) ** 3 * c[o] + 3 * (1 - t) ** 2 * t * c[2 + o] + 3 * (1 - t) * t * t * c[4 + o] + t ** 3 * c[6 + o])
 
-// The problems with outline() for drawing n: for the window at fit about the page's centre, and zoomed in by 4, 16 and
-// 64 about five knots of curve 0 (a tenth, three tenths, ... of the way along it), with tol half a pixel (as draw()
-// passes it for a shading canvas with a pixel to a CSS pixel), each chord outline() puts in place of a run of spans
-// whose box meets the window strays at most 2 tol from the run: no point of the run tried (SAMPLES a span) further
-// than 2 tol from the chord.
-function problems(n, xy) {
-  const t = tree(xy), spans = (xy.length - 2) / 6, bad = []
+// The problems with outline() for drawing n, d as parse() gives it: for the window at fit about the page's centre, and
+// zoomed in by 4, 16 and 64 about five knots of curve 0 (a tenth, three tenths, ... of the way along it), with tol half a
+// pixel, each chord outline() puts in place of a run of spans whose box meets the window strays at most tol from the run
+// (outline() replaces only runs whose flatness, a bound on that, is under tol): no point of the run tried (SAMPLES a
+// span) further than tol from the chord. And draw(), for the view at fit with dpr 1 and 2 device pixels to a CSS pixel
+// (no curves, the shading outside every curve), passes outline() tol half a pixel of its shading's canvas: s / rs / 2,
+// s page units to a CSS pixel and rs the canvas's pixels to a CSS pixel, as draw() posts it.
+function problems(n, d) {
+  const xy = d.xy, t = tree(xy), spans = (xy.length - 2) / 6, bad = []
+  for (const dpr of [1, 2]) {
+    posted.length = tols.length = 0
+    draw({ ...d, tree: t, cells: { paths: [], boxes: [], spans: [] } }, { x: MID - W / 2 * FIT, y: MID - H / 2 * FIT, s: FIT, fit: FIT,
+          w: W, h: H, dpr, k: -1, inside: d.angles.map(() => false), colour: '#e2e5ea', seq: 1 })
+    const want = posted.length === 1 ? FIT / posted[0].rs / 2 : NaN, wrong = tols.filter(tol => !(Math.abs(tol / want - 1) < 1e-12))
+    if (posted.length !== 1 || tols.length !== n || wrong.length)
+      bad.push(`at devicePixelRatio ${dpr}, draw() passed outline() ${tols.length} tols of ${[...new Set(tols.map(tol => (tol / FIT).toPrecision(6)))]} CSS pixels and posted rs ${posted.map(m => m.rs).join(' and ')}, not ${n} tols of half a pixel of its shading's canvas, ${(want / FIT).toPrecision(6)}`)
+  }
   const knot = new Map()   // "x,y" of each knot, from the second to the last (the first's again), to its number
   for (let k = 1; k <= spans; k++) knot.set(`${xy[6 * k]},${xy[6 * k + 1]}`, k)
   const along = [0.1, 0.3, 0.5, 0.7, 0.9].map(f => Math.floor(f * spans)).map(k => [xy[6 * k], xy[6 * k + 1]])
@@ -72,7 +98,7 @@ function problems(n, xy) {
         a = b
       }
       assert(a === spans, `n=${n}: outline()'s pieces end at knot ${a} of ${spans}`)
-      if (worst[0] > 2) bad.push(`zoomed in by ${z} about (${cx}, ${cy}): the chord of spans ${worst[1]} to ${worst[2]} strays ${worst[0].toFixed(3)} tol from them, over 2`)
+      if (worst[0] > 1) bad.push(`zoomed in by ${z} about (${cx}, ${cy}): the chord of spans ${worst[1]} to ${worst[2]} strays ${worst[0].toFixed(3)} tol from them, over 1`)
     }
   }
   return bad.map(p => `n=${n}, ${p}`)
@@ -80,7 +106,6 @@ function problems(n, xy) {
 
 const results = {}
 for (const n of process.argv.slice(2).map(Number)) {
-  const { xy } = parse(new Uint8Array(await readFile(path.join(ROOT, 'img', `venn-${String(n).padStart(2, '0')}.svg`))), n)
-  results[n] = problems(n, xy)
+  results[n] = problems(n, parse(new Uint8Array(await readFile(path.join(ROOT, 'img', `venn-${String(n).padStart(2, '0')}.svg`))), n))
 }
 console.log(JSON.stringify(results))

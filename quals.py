@@ -1213,9 +1213,10 @@ def qual_viewer_dblclick():
 
 @qual
 def qual_viewer_buttons():
-    """Replicata: in view.html?n=7, click +, then − twice; drag; click the fit button. Expectata: + zooms in by 2
-    and − out by 2, about the centre of the space the drawing fits on opening (between the controls along the top and
-    the swatches); fit puts the drawing back as it was on opening."""
+    """Replicata: in view.html?n=7, click +, then − twice; drag; click the fit button. Expectata: the icon buttons (the
+    back arrow, +, − and fit), without a touch screen, are 2.5rem (40 pixels) square, and the turn button is 40 pixels
+    high and at least 40 wide; + zooms in by 2 and − out by 2, about the centre of the space the drawing fits on opening
+    (between the controls along the top and the swatches); fit puts the drawing back as it was on opening."""
     return browser('buttons')
 
 
@@ -1290,37 +1291,46 @@ def qual_viewer_error():
     the others, an error within 3 seconds and no swatches; for the turned use, the error saying that img/venn-07.svg
     could not be loaded with what went wrong in brackets in numbers and symbols alone, no words (AGENTS.md rule 7), and
     the seven swatches disabled; for each failed turn, within 10 seconds, the error saying that img/venn-07.svg could
-    not be loaded, with what went wrong in brackets."""
+    not be loaded, with what went wrong in brackets, never a message "undefined"."""
     return browser('error')
 
 
 @qual
 def qual_viewer_phone():
     """Replicata: open the viewer for every n it shows, as SVG paths or on a canvas, on phones with touch screens: 375
-    by 667 and 320 by 568, upright, and 844 by 390, 568 by 320 and 667 by 375, on their sides; tap +. Expectata: the
-    controls (the back arrow and number; the SVG link, zoom buttons and turn button; the swatches and their
-    checkboxes) all fit in the window without overlapping each other, the page doesn't scroll, and every button and
-    link, and every checkbox's target (it and its label), is at least 44 by 44 pixels, Apple's guideline for something
-    to touch. After the tap, + looks as it did before it (no hover look stays behind, as it does on touch screens
-    unless hover styles are kept to devices that can hover). The drawing's square page, fitted, lies in the window (on
-    the smaller phones it may be as small as half the window's shorter side and overlap the controls: dreeves chose
-    44-pixel targets over a larger drawing there). On the phones on their sides the swatches stand in a column along
-    the right edge (1rem from it at most), and on the 844 by 390 one the drawing fits in at least 300 pixels."""
+    by 667, 320 by 568 and 400 by 500, upright, and 844 by 390, 568 by 320 and 667 by 375, on their sides; tap +. On the
+    phones on their sides, open it again while img/venn-NN.svg is slow to arrive, and again with it answering 404.
+    Expectata: the controls (the back arrow and number; the SVG link, zoom buttons and turn button; the swatches and
+    their checkboxes) all fit in the window without overlapping each other, the page doesn't scroll, and every button
+    and link, and every checkbox's target (it and its label), is at least 44 by 44 pixels, Apple's guideline for
+    something to touch. The slider's knob, on opening the last swatch, is drawn as qual_viewer_slider says: larger,
+    covering no other stop, and leaving every checkbox's target whole. After the tap, + looks as it did before it (no
+    hover look stays behind, as it does on touch screens unless hover styles are kept to devices that can hover). The
+    drawing's square page, fitted, lies in the window (on the smaller phones it may be as small as half the window's
+    shorter side and overlap the controls, which keep their 44-pixel targets). On the phones on their sides the swatches
+    stand in a column along the right edge (1rem from it at most), starting right below the top row (at most 4.5 pixels
+    below its bottom: on 2026-10-09 dreeves approved starting the column right below the top bar, with narrower gaps on
+    touch screens), and on the 844 by 390 one the drawing fits in at least 300 pixels. There, the line saying that the
+    full drawing is on its way, and the error saying that it couldn't be loaded, are each wholly visible, nothing
+    painted over any of it (hit-testing at points 4 pixels apart across it, made to take the pointer for the purpose,
+    finds nothing above it), and take no pointer: every swatch and checkbox target under one still takes it (hit-testing
+    at points 4 pixels apart across where they meet finds nothing above the target)."""
     return browser('phone')
 
 
 @qual
 def qual_viewer_shading():
     """Replicata: open view.html?n=3, view.html?n=7 and view.html?n=13 in Chromium, WebKit and Firefox, in a 1200 by 800
-    window; check the checkboxes of one set of curves after another: at n = 3 every set, from none to all three; at
-    n = 7 none, {0}, {1, 2}, {0, 2, 4}, all but curve 6, and all seven; at n = 13 none. Each time, once the drawing of
-    the shading has arrived (a worker draws it, for every n), take a screenshot and look at the probes it shows outside
-    the controls, every 2 pixels across and down the window; and at n = 3, whose lines (2.8 pixels wide here) are wide
+    window; check the checkboxes of one set of curves after another: at n = 3 every set, from none to all three; at n =
+    7 none, {0}, {1, 2}, {0, 2, 4}, all but curve 6, and all seven; at n = 13 none. Each time, once the drawing of the
+    shading has arrived (a worker draws it, for every n), take a screenshot and look at the probes it shows outside the
+    controls, every 2 pixels across and down the window; and at n = 3, whose lines (2.8 pixels wide here) are wide
     enough to cover whole pixels, at the pixels a line covers wholly, at least 5 pixels from every other curve.
     Expectata: exactly the probes of the checked set's label are shaded and every other probe is unshaded: the shading
-    is the region inside every checked curve and outside every other, beneath the curves, and with nothing checked it
-    is the region outside every curve. Beneath them: at n = 3, each pixel a line covers wholly beside the shaded region
-    is in that line's colour (each channel within 8). (Each set's label has probes in view, or the qual fails.)"""
+    is the region inside every checked curve and outside every other, beneath the curves, and with nothing checked it is
+    the region outside every curve. Beneath them: at n = 3, each pixel a line covers wholly beside the shaded region is
+    in that line's colour (each channel within 8). (Each set's label has probes in view, and at n = 3 some pixel a line
+    covers wholly lies beside the shaded region, or the qual fails.)"""
     return browser('shading')
 
 
@@ -1345,17 +1355,28 @@ def qual_viewer_checks():
 @qual
 def qual_viewer_slider():
     """Replicata: in view.html?n=7, press on the first swatch and drag along the swatches to the fifth, a swatch at a
-    time, then on past the last; press on the third and drag back past the first; after each release, move the mouse
-    on, unpressed, over the sixth swatch and then over the drawing; with a finger on a touch screen, drag from the
-    second swatch to the fourth; then focus the fourth swatch and press →, ↓, ←, ↑, ↑, Home and End; then, all seven
-    curves shown, focus the third swatch and press ←. Expectata: the swatches are the stops of a slider. While a press
-    that began on a swatch moves, the curves shown are those up to and including the swatch nearest the pointer
+    time, then on past the last; press on the third and drag back past the first; after each release, move the mouse on,
+    unpressed, over the sixth swatch and then over the drawing; with a finger on a touch screen, drag from the second
+    swatch to the fourth; then focus the fourth swatch and press →, ↓, ←, ↑, ↑, Home and End; then, all seven curves
+    shown, focus the third swatch and press ←; then click the second swatch and press Escape. Then open it on a phone
+    with a touch screen, 375 by 667, and tap the third swatch. Expectata: the swatches are the stops of a slider. While
+    a press that began on a swatch moves, the curves shown are those up to and including the swatch nearest the pointer
     (curves 0 to k for swatch k, counting from 0, as in qual_viewer_curves), with exactly their swatches pressed; past
     an end, that end's swatch. The slide ends with the press: moving the mouse on afterwards, unpressed, changes
-    nothing. A key moves it a stop from the last curve shown, whichever swatch has the focus: → and ↓ forward, ← and
-    ↑ back, Home to the first and End to the last, and the focus goes to the swatch of the last curve shown (← on the
+    nothing. A key moves it a stop from the last curve shown, whichever swatch has the focus: → and ↓ forward, ← and ↑
+    back, Home to the first and End to the last, and the focus goes to the swatch of the last curve shown (← on the
     third swatch, all seven shown, shows curves 0 to 5 and focuses the sixth); while a swatch has the focus, the arrow
-    keys don't pan the drawing. Nothing here moves the drawing."""
+    keys don't pan the drawing. Nothing here moves the drawing. The swatch of the last curve shown is the slider's knob:
+    on opening, with every curve shown, the last swatch, and after every press, move, key, click, tap and Escape above,
+    wherever the slider is, exactly that swatch is drawn larger (its box on the screen at least 1.1 times as wide and as
+    tall as every other swatch's, which are all one size) and ringed in site.css's --ink inside its border (an inset
+    box-shadow: not an outline, which is how the focus ring is drawn, so the two stay apart; it has no outline without
+    the focus), its fill still its curve's colour. Growing, it moves no stop (each stop's box stays where it was on
+    opening) and covers no other stop, and every checkbox's target, its own included, still takes the pointer over all
+    of it (hit-testing a pixel in from its corners, at the middles of its sides and at its centre finds it). With the
+    mouse, a device that can hover, the cursor over the swatches is grab, and while a slide is under way it is grabbing
+    wherever the pointer goes (at the pointer, between two swatches, over a checkbox, over the drawing); on the touch
+    screen, which can't hover, the swatches' cursor stays pointer, as on every other button."""
     return browser('slider')
 
 
@@ -1460,11 +1481,13 @@ def qual_viewer_canvas_error():
     drawing changed in one way each: an angle of NaN; a stroke-width of Infinity; a 24th use; the last use gone; another
     viewBox; an L command in the path; a use of another href; cut short halfway through the path; and then, with
     img/venn-23.svg as it is, with no Worker to be had, with canvas.js answering 404, and with the worker failing after
-    its first drawing. Expectata: the small drawing as it is is drawn; each of the broken ones shows a visible error
-    saying that img/venn-23.svg couldn't be loaded, with what went wrong in brackets ("(404)" for the 404), and no
-    loading line; the 23 swatches stay disabled, nothing is drawn, and the PNG stays as the picture; no error is left
-    uncaught (the console reports none that no code caught, from the page or its worker); and each of the last three
-    shows the same error, with what failed in its brackets (canvas.js, for its 404), never "undefined"."""
+    its first drawing (an error it throws as it draws a later view: one asking for the shading of a 24th curve).
+    Expectata: the small drawing as it is is drawn; each of the broken ones shows a visible error saying that
+    img/venn-23.svg couldn't be loaded, with what went wrong in brackets ("(404)" for the 404), and no loading line; the
+    23 swatches stay disabled, nothing is drawn, and the PNG stays as the picture; each of the last three shows the same
+    error, with what failed in its brackets (canvas.js, for its 404 and its failure), never a message "undefined"; and
+    in none of these is an error left uncaught (the console reports none that no code caught, from the page or its
+    worker), the error shown being the only report of it."""
     return browser('canvasError')
 
 
@@ -1520,16 +1543,20 @@ def qual_viewer_canvas_turn():
 
 
 @qual
-def qual_canvas_outline():
+def qual_outline():
     """Replicata: in node, without a browser (tools/outline_quals.mjs), run canvas.js's own parse(), tree() and
     outline() on img/venn-NN.svg for every n the viewer shows, for the views of a 1200 by 800 window at fit (the page
-    700 pixels across) and zoomed in by 4, 16 and 64 about five knots of curve 0, with tol half a pixel, as draw()
-    passes it for a shading canvas with a pixel to a CSS pixel. Expectata: each run of spans that outline() replaces by
-    the chord between its ends, where the run's box (bounding its control points) meets the view, stays within 2 tol of
-    that chord, the bound outline()'s comment gives (tried at 16 points a span, evenly spaced in its parameter from its
-    start), so that the shading's edge strays at most about a pixel from the curve. (With tree()'s flatness missing its
-    chords' term, chords strayed up to 22 tol at n = 11 and 1794 at n = 19, and the browser quals' views of the shading
-    missed it.)"""
+    700 pixels across) and zoomed in by 4, 16 and 64 about five knots of curve 0, with tol half a pixel; and run its own
+    draw() on the view at fit, with one and with two device pixels to a CSS pixel (its canvases stand-ins that draw
+    nothing), keeping the tol it passes outline() for each curve. Expectata: each run of spans that outline() replaces
+    by the chord between its ends, where the run's box (bounding its control points) meets the view, stays within tol of
+    that chord (tried at 16 points a span, evenly spaced in its parameter from its start): outline() replaces only runs
+    whose flatness, a bound on that, is under tol. And draw() passes outline() tol half a pixel of the shading's canvas
+    (s / rs / 2: s page units to a CSS pixel, rs the canvas's pixels to a CSS pixel, as draw() posts it). So the
+    shading's edge strays at most 2 tol, about a pixel, from the curve. (With tree()'s flatness missing its chords'
+    term, chords strayed up to 22 tol at n = 11 and 1794 at n = 19, and the browser quals' views of the shading missed
+    it. With outline() replacing runs under twice tol, they strayed up to 1.5 tol at n = 11 and 13, which this qual
+    passed while it allowed 2 tol; with draw() passing tol a pixel, or two, every check of outline() alone passed.)"""
     run = subprocess.run(['node', str(HERE / 'tools' / 'outline_quals.mjs'), *map(str, VIEWED)],
                          capture_output=True, text=True)
     assert run.returncode == 0, run.stderr[-3000:]
