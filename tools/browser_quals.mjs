@@ -61,13 +61,15 @@ const strokes = page => page.evaluate(() => [...document.querySelectorAll('#stag
 }))
 // Where the page goes at zoom 1: the square that fits below the top controls and clear of the swatches (a row along
 // the bottom, or in a landscape window a column along the right edge), centred there, but never less than half the
-// window's shorter side; side is that square's side in pixels, (x, y) its centre
+// window's shorter side, and then never past the window's left edge; side is that square's side in pixels, (x, y) its
+// centre
 const area = page => page.evaluate(() => {
   const t = document.getElementById('top').getBoundingClientRect().bottom
   const c = document.getElementById('curves'), r = c.getBoundingClientRect()
   const column = getComputedStyle(c).writingMode !== 'horizontal-tb'
   const right = column ? r.left : innerWidth, bottom = column ? innerHeight : r.top
-  return { x: right / 2, y: (t + bottom) / 2, side: Math.max(Math.min(right, bottom - t), Math.min(innerWidth, innerHeight) / 2) }
+  const side = Math.max(Math.min(right, bottom - t), Math.min(innerWidth, innerHeight) / 2)
+  return { x: Math.max(right, side) / 2, y: (t + bottom) / 2, side }
 })
 // Dispatch synthetic pointer events at the stage, as a mouse, pen or finger would send them
 const pointers = (page, events) => page.evaluate(events => {
@@ -124,6 +126,16 @@ function spy() {
     requestAnimationFrame(frame)
   }
   requestAnimationFrame(frame)
+}
+
+// Installed in the page before the viewer's own script, like spy(): each message from a worker reaches the page's
+// listener as usual, or, while window.__held is an array, waits in it, as a function that delivers it
+function holdable() {
+  const listen = Worker.prototype.addEventListener
+  Worker.prototype.addEventListener = function (type, f, options) {
+    const held = e => window.__held ? window.__held.push(() => f.call(this, e)) : f.call(this, e)
+    return listen.call(this, type, type === 'message' ? held : f, options)
+  }
 }
 
 // In the page: the viewer's canvas against its reference, curves 0 to k of the drawing's file as this draws them
@@ -473,21 +485,33 @@ function landing(angles) {
     return j
   })
 }
+// Where qual_viewer_turn and qual_viewer_canvas_turn say curve i lands: on curve LANDS[n](i) (mod n)
+const LANDS = { 3: i => i - 1, 7: i => i + 1, 23: i => i + 1 }
+// Expect lands, landing()'s, to be those
+function stated(lands, n, problem) {
+  const want = lands.map((_, i) => (LANDS[n](i) + n) % n)
+  if (String(lands) !== String(want)) problem(`n=${n}: curve i lands on curve lands[i], lands = [${lands}], not [${want}] as the qual says`)
+}
 const landed = (L, lands) => lands.reduce((M, j, i) => M | (L >> i & 1) << j, 0)   // label L, every curve turned
 // The turns act() sets off (spy() installed), k of them: a log of every animation frame, every ask for a drawing
 // (postMessage) and every drawing shown (transferFromImageBitmap), from just before act() until k asks have each been
 // followed by a drawing shown and a frame has passed after the last (or a minute has). Each entry has its kind, the
 // angle #region is turned by (degrees, clockwise on screen) and its transform's entries (a turn has a = d, b = -c,
 // e = f = 0 and a² + b² = 1), its transform-origin, the label checked, and whether the turn button is enabled and has
-// the focus.
+// the focus; and where the curves are: #picture's transform, and the boxes on the screen of the SVG, its paths and the
+// curves' canvas (every canvas in #stage outside #region), and whether #region holds its canvas alone.
 async function turns(page, k, act) {
   await page.evaluate(k => {
     const region = document.getElementById('region'), button = document.getElementById('turn'), log = []
-    const boxes = [...document.querySelectorAll('#curves input[type=checkbox]')]
+    const boxes = [...document.querySelectorAll('#curves input[type=checkbox]')], picture = document.getElementById('picture')
+    const curves = [...document.querySelectorAll('#stage svg, #stage path, #stage canvas')].filter(e => !region.contains(e))
     const note = kind => {
       const s = getComputedStyle(region), m = s.transform === 'none' ? new DOMMatrix() : new DOMMatrix(s.transform)
       log.push({ kind, angle: Math.atan2(m.b, m.a) * 180 / Math.PI, m: [m.a, m.b, m.c, m.d, m.e, m.f], origin: s.transformOrigin,
-                 label: boxes.reduce((L, c, i) => L | c.checked << i, 0), enabled: !button.disabled, focus: document.activeElement === button })
+                 label: boxes.reduce((L, c, i) => L | c.checked << i, 0), enabled: !button.disabled, focus: document.activeElement === button,
+                 picture: getComputedStyle(picture).transform,
+                 curves: curves.flatMap(e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height] }),
+                 alone: region.childElementCount === 1 && region.firstElementChild instanceof HTMLCanvasElement })
     }
     const wrap = (proto, name, kind) => {   // log each call of proto[name], until the returned function puts it back
       const f = proto[name]
@@ -521,7 +545,9 @@ async function turns(page, k, act) {
 // checkboxes, when it asks for a drawing (one ask a turn), #region turned by angles from 0 to -360/n degrees, some
 // strictly between, and labels[j - 1] checked; from that ask until a drawing is shown after it, turned by exactly
 // -360/n degrees, and labels[j] checked; after the last turn's drawing, not turned. Throughout, the turn button enabled,
-// and if keys, with the focus. (Angles to 1e-3 degrees: the computed transform gives six digits.)
+// and if keys, with the focus; the curves where they were at the first entry (#picture's transform the same, and the
+// boxes to 0.01 pixel); and #region holding its canvas alone. (Angles to 1e-3 degrees: the computed transform gives
+// six digits.)
 function turnedWell(log, n, o2, labels, keys, what, problem) {
   const count = labels.length - 1, asks = log.flatMap((e, i) => e.kind === 'ask' ? [i] : [])
   // shown[j]: the end of the drawing shown first after ask j, the last of the drawings shown with it (the page shows
@@ -534,8 +560,10 @@ function turnedWell(log, n, o2, labels, keys, what, problem) {
     return problem(`${what}: ${asks.length} drawings asked for and ${shown.filter(i => i >= 0).length} shown after their asks, not ${count}`)
   const flagged = new Set(), spun = Array(count).fill(false)
   log.forEach((e, i) => {
-    // j: the turns whose checkboxes have changed; held: the last of them still waiting for its drawing
+    // j: the turns whose checkboxes have changed; held: the last of them still waiting for its drawing; moved: how far
+    // the curves' boxes are from the first entry's
     const j = asks.filter(a => a <= i).length, held = j > 0 && i <= shown[j - 1], [a, b, c, d, x, y] = e.m
+    const moved = Math.max(...e.curves.map((v, k) => Math.abs(v - log[0].curves[k])), e.curves.length === log[0].curves.length ? 0 : Infinity)
     const [when, lo, hi] = held ? [`from turn ${j}'s ask for a drawing until one was shown`, -360 / n, -360 / n]
       : j === count ? ['after the last turn\'s drawing', 0, 0] : [`as turn ${j + 1} spun`, -360 / n, 0]
     if (!held && j < count && e.kind === 'frame' && e.angle > -360 / n + 0.5 && e.angle < -0.5) spun[j] = true
@@ -548,6 +576,9 @@ function turnedWell(log, n, o2, labels, keys, what, problem) {
        `#region turned about ${e.origin}, not the page's centre at (${o2.map(v => v.toFixed(1))})`],
       ['enabled', !e.enabled, 'the turn button disabled'],
       ['focus', keys && !e.focus, 'the turn button without the focus'],
+      ['curves', e.picture !== log[0].picture || !(moved <= 0.01),
+       `the curves moved: #picture's transform ${e.picture}, first ${log[0].picture}; their boxes up to ${moved} pixels from the first`],
+      ['region', !e.alone, '#region holds more than its canvas'],
     ]) {
       if (bad && !flagged.has(`${when} ${flaw}`)) problem(`${what}, ${when} (${e.kind}, entry ${i} of ${log.length}): ${says}`)
       if (bad) flagged.add(`${when} ${flaw}`)
@@ -555,16 +586,22 @@ function turnedWell(log, n, o2, labels, keys, what, problem) {
   })
   spun.forEach((s, j) => { if (!s) problem(`${what}: turn ${j + 1} not animated: #region turned by no angle strictly between 0 and -360/${n} degrees`) })
 }
-// Expect the turn button's face to say τ/n, n's value, and to fit inside the button
+// Expect the turn button's face to say τ/n, n's value, to fit inside the button, and its τ to be a glyph, under 0.7
+// em wide, not the box a browser draws for a character its font lacks, an em wide (Firefox drew one with Google Fonts
+// blocked, as here, when the fallback was Georgia)
 async function faced(page, n, problem) {
-  const [face, text, box] = await page.evaluate(() => {
-    const b = document.getElementById('turn'), r = document.createRange()
+  const [face, text, box, tau] = await page.evaluate(() => {
+    const b = document.getElementById('turn'), r = document.createRange(), first = document.createRange()
     r.selectNodeContents(b)
-    return [b.textContent, ...[r, b].map(e => { const q = e.getBoundingClientRect(); return [q.left, q.top, q.right, q.bottom] })]
+    first.setStart(b.firstChild, 0)
+    first.setEnd(b.firstChild, 1)
+    return [b.textContent, ...[r, b].map(e => { const q = e.getBoundingClientRect(); return [q.left, q.top, q.right, q.bottom] }),
+            first.getBoundingClientRect().width / parseFloat(getComputedStyle(b).fontSize)]
   })
   if (face !== `τ/${n}`) problem(`n=${n}: the turn button's face says ${JSON.stringify(face)}, not "τ/${n}"`)
   if (!(text[0] >= box[0] && text[1] >= box[1] && text[2] <= box[2] && text[3] <= box[3]))
     problem(`n=${n}: the turn button's face, at ${text.map(Math.round)}, spills out of it, at ${box.map(Math.round)}`)
+  if (!(tau < 0.7)) problem(`n=${n}: the turn button's τ is ${tau.toFixed(3)} em wide, not under 0.7: a missing glyph's box`)
 }
 
 const CHECKS = {
@@ -927,7 +964,7 @@ const CHECKS = {
   },
 
   async resize(page, problem) {
-    await open(page, SMALL)
+    await openShaded(page, SMALL)
     await page.click('#in')
     const a0 = await area(page), c = [a0.x, a0.y], m0 = await ctm(page), p = under(m0, c)
     await page.setViewportSize({ width: 800, height: 600 })
@@ -942,7 +979,17 @@ const CHECKS = {
     const a2 = await area(page)
     if (a2.side < 50) problem(`in a 1200 by 100 window the drawing would be ${a2.side} pixels, under half the window's shorter side`)
     holds(problem, await ctm(page), [a2.x, a2.y], [25600, 25600], a2.side / 51200, 'fitted in a 1200 by 100 window')
-    await page.setViewportSize({ width: W, height: H })
+    // No pixels high, then none wide (a pixel in WebKit, whose Playwright refuses a window of none), then as it was:
+    // each time drawn anew (spy()), with no error
+    const none = page.context().browser().browserType().name() === 'webkit' ? 1 : 0
+    for (const [w, h] of [[W, none], [none, H], [W, H]]) {
+      const t = await now(page)
+      await page.setViewportSize({ width: w, height: h })
+      await page.waitForFunction(t => !document.getElementById('error').hidden ||
+                                      (window.__seen.asked.at(-1) > t && window.__seen.shown.at(-1) > window.__seen.asked.at(-1)), t, { timeout: 60000 })
+      const error = await page.evaluate(() => document.getElementById('error').hidden ? null : document.getElementById('error').textContent)
+      if (error !== null) problem(`in a ${w} by ${h} window: the error "${error}"`)
+    }
   },
 
   async links(page, problem) {
@@ -967,11 +1014,17 @@ const CHECKS = {
       image: [...document.querySelectorAll('#stage image')].map(i => i.getAttribute('href')),
       curves: document.querySelectorAll('#stage path').length,
       enabled: document.querySelectorAll('#curves button:enabled').length,
-      swatches: document.querySelectorAll('#curves button').length }))),
+      swatches: document.querySelectorAll('#curves button').length,
+      turn: [document.getElementById('turn').disabled, getComputedStyle(document.getElementById('turn')).color] }))),
       status: await page.locator('#status').isVisible() })
+    const colour = name => `rgb(${hex(name).join(', ')})`   // site.css's colour --name, as getComputedStyle() gives it
     const s0 = await state()
-    const want0 = { image: [`img/venn-${nn(SMALL)}.png`], curves: 0, enabled: 0, swatches: SMALL, status: true }
+    const want0 = { image: [`img/venn-${nn(SMALL)}.png`], curves: 0, enabled: 0, swatches: SMALL, turn: [true, colour('muted')], status: true }
     if (JSON.stringify(s0) !== JSON.stringify(want0)) problem(`while the SVG loads: ${JSON.stringify(s0)}, not ${JSON.stringify(want0)}`)
+    // The disabled turn button has no hover look either
+    await page.hover('#turn')
+    const border = await page.evaluate(() => getComputedStyle(document.getElementById('turn')).borderTopColor)
+    if (border !== colour('line')) problem(`while the SVG loads, the turn button, hovered over, has border ${border}, not ${colour('line')}`)
     const box = () => page.evaluate(() => {
       const r = document.querySelector('#stage image').getBoundingClientRect()
       return [r.left, r.top, r.width, r.height]
@@ -986,7 +1039,7 @@ const CHECKS = {
     release()
     await ready(page, SMALL)
     const s1 = await state()
-    const want1 = { image: [], curves: SMALL, enabled: SMALL, swatches: SMALL, status: false }
+    const want1 = { image: [], curves: SMALL, enabled: SMALL, swatches: SMALL, turn: [false, colour('ink')], status: false }
     if (JSON.stringify(s1) !== JSON.stringify(want1)) problem(`once it has loaded: ${JSON.stringify(s1)}, not ${JSON.stringify(want1)}`)
     await page.unroute(`**/img/venn-${nn(SMALL)}.svg`)
   },
@@ -1017,17 +1070,43 @@ const CHECKS = {
     await page.goto(`${BASE}/view.html?n=${SMALL}`)
     await page.waitForSelector('#error', { state: 'visible', timeout: 60000 })
     const got2 = await page.evaluate(() => ({ text: document.getElementById('error').textContent,
+                                              swatches: document.querySelectorAll('#curves button').length,
                                               enabled: document.querySelectorAll('#curves button:enabled').length }))
     const said = got2.text.match(/^Couldn't load (\S+) \((.+)\)$/)
     if (!said || said[1] !== `img/venn-${nn(SMALL)}.svg` || /[A-Za-z]/.test(said[2])) problem(`use 3 turned a degree more: the error says "${got2.text}"`)
-    if (got2.enabled) problem(`use 3 turned a degree more: ${got2.enabled} swatches enabled`)
+    if (got2.swatches !== SMALL || got2.enabled) problem(`use 3 turned a degree more: ${got2.swatches} swatches, ${got2.enabled} of them enabled`)
     await page.unroute(`**/img/venn-${nn(SMALL)}.svg`)
+    // A turn that fails, each way in a fresh load of the page: the worker unable to draw the view the turn asks for
+    // (each view the page asks for once window.__spoil is set has inside null, which draw() can't read), and the turn's
+    // animation cancelled while it turns (so that its finished promise rejects)
+    await page.addInitScript(() => {
+      const post = Worker.prototype.postMessage
+      Worker.prototype.postMessage = function (data, ...rest) { return post.call(this, window.__spoil ? { ...data, inside: null } : data, ...rest) }
+    })
+    for (const [what, fail] of [['the worker unable to draw the turn\'s view', () => {
+                                  window.__spoil = true
+                                  document.getElementById('turn').click()
+                                }],
+                                ['the turn\'s animation cancelled', async () => {
+                                  document.getElementById('turn').click()
+                                  await new Promise(ok => requestAnimationFrame(ok))
+                                  document.getElementById('region').getAnimations().forEach(a => a.cancel())
+                                }]]) {
+      await page.goto(`${BASE}/view.html?n=${SMALL}`, { waitUntil: 'commit' })
+      await ready(page, SMALL)
+      await page.waitForFunction(() => !document.getElementById('turn').disabled)
+      await page.evaluate(fail)
+      const text = await page.waitForSelector('#error', { state: 'visible', timeout: 10000 })
+        .then(() => page.locator('#error').textContent(), () => null)
+      if (!text?.startsWith(`Couldn't load img/venn-${nn(SMALL)}.svg (`)) problem(`a turn failing, ${what}: the error says ${JSON.stringify(text)}`)
+    }
   },
 
   async phone(page, problem) {
-    // Every n, each opened as the viewer draws it: as SVG paths, or on a canvas
+    // Every n, each opened as the viewer draws it: as SVG paths, or on a canvas; on phones upright and on their side,
+    // each with the least side the drawing may have there (0 for none)
     for (const [n, opened] of [...PATHS.map(n => [n, open]), ...CANVAS.map(n => [n, openCanvas])]) {
-      for (const [w, h] of [[375, 667], [320, 568], [844, 390]]) {
+      for (const [w, h, least] of [[375, 667, 0], [320, 568, 0], [844, 390, 300], [568, 320, 0], [667, 375, 0]]) {
         const phone = await page.context().browser().newContext({ viewport: { width: w, height: h }, hasTouch: true })
         try {
           const p = await phone.newPage()
@@ -1051,8 +1130,18 @@ const CHECKS = {
             return [e.id || e.title || e.textContent, Math.round(r.width), Math.round(r.height)]
           }).filter(([, w, h]) => w < 44 || h < 44))
           if (small.length) problem(`${w} wide, n=${n}: on a touch screen these are under 44 by 44 pixels: ${JSON.stringify(small)}`)
-          const side = await p.evaluate(() => document.querySelector('#stage svg').getScreenCTM().a * 51200)
-          if (w > h && side < 300) problem(`${w} by ${h}, n=${n}: the drawing fits in ${side} pixels, under 300`)
+          // The drawing's square page, fitted, lies in the window
+          const [l, t, r, b] = await p.evaluate(() => {
+            const m = document.querySelector('#stage svg').getScreenCTM()
+            return [m.e, m.f, m.e + m.a * 51200, m.f + m.d * 51200]
+          })
+          if (l < -0.5 || t < -0.5 || r > w + 0.5 || b > h + 0.5) problem(`${w} by ${h}, n=${n}: the drawing's square spans (${l}, ${t}) to (${r}, ${b}), outside the window`)
+          if (r - l < least) problem(`${w} by ${h}, n=${n}: the drawing fits in ${r - l} pixels, under ${least}`)
+          // On a phone on its side, the swatches stand in a column (vertical writing: see view.html) along the right
+          // edge, as near it as #curves's margin, 1rem at most
+          const [mode, right] = await p.evaluate(() => [getComputedStyle(document.getElementById('curves')).writingMode,
+                                                        document.getElementById('curves').getBoundingClientRect().right])
+          if (w > h && (mode === 'horizontal-tb' || w - right > 16.5)) problem(`${w} by ${h}, n=${n}: the swatches in ${mode}, ending ${w - right} pixels from the right edge`)
           // A tapped button looks as it did: a touch screen's tap leaves no hover look behind
           const look = () => p.evaluate(() => getComputedStyle(document.getElementById('in')).borderTopColor)
           const was = await look()
@@ -1084,14 +1173,16 @@ const CHECKS = {
   // ---- The shading (see probes())
 
   async shading(page, problem) {
-    // n = 3, whose lines cover whole pixels (covered()); n = 7 and 13, whose lines are too thin to. At 13 an outline()
-    // less exact than it is (with a tolerance of 4 pixels) showed furthest from the curves: 1.8 pixels beyond a line's
-    // edge, 1.3 at 7
-    for (const [n, labels] of [[3, [0, 1, 2, 3, 4, 5, 6, 7]], [SMALL, [0, 0b1, 0b110, 0b10101, 0b111111, 0b1111111]], [13, [0]]]) {
+    // n = 3, whose lines cover whole pixels (covered(), which must find some, wide = true); n = 7 and 13, whose lines
+    // are too thin to. At 13 an outline() less exact than it is (with a tolerance of 4 pixels) showed furthest from the
+    // curves: 1.8 pixels beyond a line's edge, 1.3 at 7
+    for (const [n, labels, wide] of [[3, [0, 1, 2, 3, 4, 5, 6, 7], true], [SMALL, [0, 0b1, 0b110, 0b10101, 0b111111, 0b1111111], false],
+                                     [13, [0], false]]) {
       await (async () => {
         assert(PATHS.includes(n), `n = ${n} is not among the n given: ${PATHS}`)
         await openShaded(page, n)
         const m = await mapping(page), ps = await probes(page, n, m, FINE), lines = await covered(page, n, m)
+        if (wide && !lines.length) problem(`n=${n}: no pixel that a line covers wholly, at least ${FAR} pixels from every other curve`)
         for (const L of labels) {
           await check(page, n, L)
           await shows(page, ps, L, `n=${n}, curves ${curvesIn(L)} checked`, problem, lines)
@@ -1156,6 +1247,13 @@ const CHECKS = {
     }
     const mutations = await page.evaluate(() => window.__mutations)
     if (mutations.length) problem(`the clicks and Space changed the curves' SVG ${mutations.length} times: ${mutations.slice(0, 3).join('; ')}`)
+    // Hiding curves changes neither the checkboxes nor the shading: the third swatch hides curves 3 to 6, curve 3
+    // checked; then the fit button, which has the shading drawn anew
+    await page.locator('#curves button').nth(2).click()
+    await redrawn(page, () => page.click('#fit'))
+    const hid = await checked(page)
+    if (hid !== 0b1000) problem(`after the third swatch hid curves 3 to 6, curves ${curvesIn(hid)} are checked, not ${curvesIn(0b1000)}`)
+    await shows(page, ps, 0b1000, 'after the third swatch hid curves 3 to 6, and the fit button', problem)
     await placed('under', 600, 800)
     await page.setViewportSize({ width: W, height: H })
     // A phone with a touch screen: a tap toggles, and the target is 44 by 44 pixels or more
@@ -1210,6 +1308,11 @@ const CHECKS = {
       }
       await page.mouse.up()
       await at(path.at(-1)[1], `${what}, released`)
+      // The slide ends with the press: the mouse moving on unpressed, over a swatch or the drawing, changes nothing
+      for (const [to, where] of [[centres[5], 'the sixth swatch'], [[W * 0.4, H * 0.5], 'the drawing']]) {
+        await page.mouse.move(...to, { steps: 4 })
+        await at(path.at(-1)[1], `${what}, released, then the mouse moved on unpressed over ${where}`)
+      }
     }
     // A finger, from the second swatch to the fourth (synthetic touch pointers, as a phone sends them, at the swatch
     // pressed, which keeps the pointer)
@@ -1222,45 +1325,48 @@ const CHECKS = {
     await at(2, 'a finger dragged from the second swatch to the third')
     await touch([['pointermove', centres[3], 1], ['pointerup', centres[3], 0]])
     await at(3, 'then on to the fourth, and lifted')
-    // Keys, starting from the fourth swatch focused
-    await page.locator('#curves button').nth(3).focus()
-    for (const [key, k] of [['ArrowRight', 4], ['ArrowDown', 5], ['ArrowLeft', 4], ['ArrowUp', 3], ['ArrowUp', 2], ['Home', 0], ['End', SMALL - 1]]) {
+    // Keys, each on a swatch focused first: the fourth, where the finger left the slider, then each the swatch the key
+    // before moved the focus to; then, all shown, the third, not the last curve shown, from which a key doesn't move
+    for (const [on, key, k] of [[3, 'ArrowRight', 4], [4, 'ArrowDown', 5], [5, 'ArrowLeft', 4], [4, 'ArrowUp', 3], [3, 'ArrowUp', 2],
+                                [2, 'Home', 0], [0, 'End', SMALL - 1], [2, 'ArrowLeft', SMALL - 2]]) {
+      await page.locator('#curves button').nth(on).focus()
       await page.keyboard.press(key)
-      await at(k, `${key} on a swatch`)
+      await at(k, `${key} on swatch ${on}`)
       const focus = await page.evaluate(() => [...document.querySelectorAll('#curves button')].indexOf(document.activeElement))
-      if (focus !== k) problem(`after ${key}, the focus is on swatch ${focus}, not ${k}`)
+      if (focus !== k) problem(`after ${key} on swatch ${on}, the focus is on swatch ${focus}, not ${k}`)
     }
     holds(problem, await ctm(page), [m0.e, m0.f], [0, 0], m0.a, 'after dragging along the swatches and pressing keys on them')
   },
 
   async turn(page, problem) {
+    await page.addInitScript(holdable)
     for (const [n, L0] of [[3, 0b1], [SMALL, 0b101]]) {
       await (async () => {
         await openShaded(page, n)
         await faced(page, n, problem)
         const { angles, side } = await shape(n), lands = landing(angles)
+        stated(lands, n, problem)
         const m = await mapping(page), ps = await probes(page, n, m)
         const curves = () => page.evaluate(() => [...document.querySelectorAll('#stage path')].map(p => [p.getAttribute('d'), p.getAttribute('stroke')]))
         const before = await curves(), centre = [(side / 2 - m.x) / m.s, (side / 2 - m.y) / m.s]
         const click = () => page.evaluate(() => document.getElementById('turn').click())
         // Enter on the button, focused, then again; a click, and another a frame later, while the first turn spins;
-        // with every curve checked, a click. Each: what, how many turns, whether the button is to keep the focus, how
+        // with every curve checked, a click. Each: what it is, how many turns it makes, whether the button is to keep
+        // the focus throughout, the act itself, and the label to check before it, given the label the act before left
         let L = L0
         await check(page, n, L)
         await page.focus('#turn')
-        for (const [what, k, keys, act] of [['Enter on the turn button', 1, true, () => page.keyboard.press('Enter')],
-                                            ['Enter on it again', 1, true, () => page.keyboard.press('Enter')],
-                                            ['a click and another while it turns', 2, false, () => page.evaluate(async () => {
-                                              const button = document.getElementById('turn')
-                                              button.click()
-                                              await new Promise(ok => requestAnimationFrame(ok))
-                                              button.click()
-                                            })],
-                                            ['a click with every curve checked', 1, false, click]]) {
-          if (what === 'a click with every curve checked') {
-            L = 2 ** n - 1
-            await check(page, n, L)
-          }
+        for (const [what, k, keys, act, start] of [['Enter on the turn button', 1, true, () => page.keyboard.press('Enter'), L => L],
+                                                   ['Enter on it again', 1, true, () => page.keyboard.press('Enter'), L => L],
+                                                   ['a click and another while it turns', 2, false, () => page.evaluate(async () => {
+                                                     const button = document.getElementById('turn')
+                                                     button.click()
+                                                     await new Promise(ok => requestAnimationFrame(ok))
+                                                     button.click()
+                                                   }), L => L],
+                                                   ['a click with every curve checked', 1, false, click, () => 2 ** n - 1]]) {
+          L = start(L)
+          await check(page, n, L)   // which does nothing when L is checked already
           const labels = [L]
           for (let j = 0; j < k; j++) labels.push(landed(labels[j], lands))
           turnedWell(await turns(page, k, act), n, centre, labels, keys, `n=${n}, ${what}`, problem)
@@ -1269,6 +1375,37 @@ const CHECKS = {
           if (got !== L) problem(`n=${n}, after ${what}: curves ${curvesIn(got)} checked, not ${curvesIn(L)}`)
           await shows(page, ps, L, `n=${n}, after ${what}`, problem)
         }
+        // The race shade()'s numbers guard against: a drawing asked for before a turn's arriving after the turn has
+        // asked for its own. With L0 checked again, every message from the worker held back (holdable()) from a resize
+        // event on, which has the page draw anew; the turn button clicked once that drawing has come; and it delivered
+        // once the turn has asked for its own. #region stays turned until the turn's own drawing is shown.
+        await check(page, n, L0)
+        await page.evaluate(() => {
+          window.__held = []
+          dispatchEvent(new Event('resize'))
+        })
+        await page.waitForFunction(() => window.__held.length === 1)
+        const asked = await page.evaluate(() => window.__seen.asked.length)
+        await click()
+        await page.waitForFunction(k => window.__seen.asked.length > k, asked)
+        const angle = await page.evaluate(async () => {
+          window.__held.shift()()
+          await new Promise(ok => requestAnimationFrame(ok))
+          const m = new DOMMatrix(getComputedStyle(document.getElementById('region')).transform)
+          return Math.atan2(m.b, m.a) * 180 / Math.PI
+        })
+        if (!(Math.abs(angle + 360 / n) <= 1e-3))
+          problem(`n=${n}, a drawing asked for before a turn's, arriving after the turn asked for its own: #region turned by ${angle.toFixed(4)} degrees, not ${(-360 / n).toFixed(4)}`)
+        await page.evaluate(() => {
+          const held = window.__held
+          window.__held = null
+          held.forEach(deliver => deliver())
+        })
+        await page.waitForFunction(() => getComputedStyle(document.getElementById('region')).transform === 'none')
+        L = landed(L0, lands)
+        const got = await checked(page)
+        if (got !== L) problem(`n=${n}, after the turn with a drawing held back: curves ${curvesIn(got)} checked, not ${curvesIn(L)}`)
+        await shows(page, ps, L, `n=${n}, after the turn with a drawing held back`, problem)
         if (JSON.stringify(await curves()) !== JSON.stringify(before)) problem(`n=${n}: the curves' paths or colours changed in the turns`)
         holds(problem, await ctm(page), [m.x, m.y].map(v => -v / m.s), [0, 0], 1 / m.s, `n=${n}, after the turns`)
       })().catch(e => problem(`n=${n}: ${e.name}: ${e.message.split('\n')[0]}`))
@@ -1305,13 +1442,21 @@ const CHECKS = {
       for (let i = 1; i <= 10; i++) { ptr('pointermove', 2, x + 60 + 6 * i, y, 1, 'touch'); track(); await wait(16) }
       ptr('pointerup', 2, x + 120, y, 0, 'touch'); ptr('pointerup', 1, x, y, 0, 'touch')
       // Then until the new drawing arrives, drawn anew SETTLE ms after the gestures, how far the old one moves from
-      // where the gestures left it
+      // where the gestures left it: every 5 ms, and as the curves are drawn anew (#picture's transform set back to
+      // the identity), seen by a MutationObserver, whose callback runs before the worker's next message can (in
+      // Chromium the new shading arrived within 5 ms)
       const B1 = box(), seen = window.__seen, t1 = performance.now()
       let pending = 0
+      const picture = document.getElementById('picture'), gap = () => Math.max(...box().map((v, i) => Math.abs(v - B1[i])))
+      const observer = new MutationObserver(() => {
+        if (getComputedStyle(picture).transform === 'matrix(1, 0, 0, 1, 0, 0)') pending = Math.max(pending, gap())
+      })
+      observer.observe(picture, { attributes: true, attributeFilter: ['style'] })
       while (!(seen.asked.some(t => t > t1) && seen.shown.at(-1) > seen.asked.at(-1)) && performance.now() - t1 < 60000) {
-        pending = Math.max(pending, ...box().map((v, i) => Math.abs(v - B1[i])))
+        pending = Math.max(pending, gap())
         await wait(5)
       }
+      observer.disconnect()
       return [Math.max(...off), pending]
     }, [x, y])
     if (!(off[0] <= 0.5)) problem(`during the gestures the shading's canvas was up to ${off[0].toFixed(1)} pixels from where the picture's transform put it`)
@@ -1380,17 +1525,20 @@ const CHECKS = {
       const fit = fitted(await area(page), side)
       // A drag, a run of wheel turns and a two-finger pinch as a hand makes them, an event every 16 ms, as in settle,
       // starting from a point on curve 0, (x, y), so that the view they end in shows curves. At every event, how far the
-      // canvas's box on the screen is from where the picture's transform puts the box it had before (off); after the
-      // last, how far it moves from there until the new drawing arrives (pending)
+      // canvases' boxes on the screen (the curves' and the shading's) are from where the picture's transform puts the
+      // boxes they had before (off); after the last, how far they move from there until the new drawing arrives (pending)
       const [x, y] = knots[1].map((v, i) => Math.round((v - [fit.x, fit.y][i]) / fit.s))
       const r = await page.evaluate(async ([x, y]) => {
         const stage = document.getElementById('stage'), picture = () => getComputedStyle(document.getElementById('picture')).transform
         const ptr = (type, id, x, y, buttons, pointerType) => stage.dispatchEvent(new PointerEvent(type,
           { pointerId: id, pointerType, isPrimary: id === 1, button: 0, buttons, clientX: x, clientY: y, bubbles: true }))
         const wait = ms => new Promise(ok => setTimeout(ok, ms))
-        const box = () => { const b = document.querySelector('#stage canvas').getBoundingClientRect(); return [b.left, b.top, b.width, b.height] }
+        const box = () => [...document.querySelectorAll('#stage canvas')].flatMap(c => {
+          const b = c.getBoundingClientRect()
+          return [b.left, b.top, b.width, b.height]
+        })
         const B0 = box(), off = []
-        const at = (B, m) => [m.a * B[0] + m.e, m.d * B[1] + m.f, m.a * B[2], m.d * B[3]]
+        const at = (B, m) => B.map((v, i) => [m.a * v + m.e, m.d * v + m.f, m.a * v, m.d * v][i % 4])
         const gap = (b, c) => Math.max(...b.map((v, i) => Math.abs(v - c[i])))
         const track = () => off.push(gap(box(), at(B0, new DOMMatrix(picture()))))
         const before = picture(), during = [], t0 = performance.now()
@@ -1430,8 +1578,8 @@ const CHECKS = {
       const after = await page.evaluate(() => getComputedStyle(document.getElementById('picture')).transform)
       if (after !== IDENTITY) problem(`n=${n}: once drawn anew, the picture's transform is ${after}, not the identity`)
       // A drawing asked for before a drag and arriving during it: curve 0 alone, then all of them (Escape), then a drag
-      // at once, a move every 16 ms, until 10 moves after the drawing arrives. At every move, how far the canvas is from
-      // where the picture's transform puts the drawing
+      // at once, a move every 16 ms, until 10 moves after the drawing arrives. At every move, how far the canvases (the
+      // curves' and the shading's) are from where the picture's transform puts the drawings
       const t2 = await now(page)
       await page.click('#curves button')
       await drawnSince(page, t2)
@@ -1439,7 +1587,10 @@ const CHECKS = {
         const stage = document.getElementById('stage'), wait = ms => new Promise(ok => setTimeout(ok, ms))
         const ptr = (type, x, y, buttons) => stage.dispatchEvent(new PointerEvent(type,
           { pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons, clientX: x, clientY: y, bubbles: true }))
-        const box = () => { const b = document.querySelector('#stage canvas').getBoundingClientRect(); return [b.left, b.top, b.width, b.height] }
+        const box = () => [...document.querySelectorAll('#stage canvas')].flatMap(c => {
+          const b = c.getBoundingClientRect()
+          return [b.left, b.top, b.width, b.height]
+        })
         const B0 = box(), seen = window.__seen, off = []
         dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
         const t = performance.now()
@@ -1451,7 +1602,7 @@ const CHECKS = {
           const m = new DOMMatrix(getComputedStyle(document.getElementById('picture')).transform), b = box()
           if (seen.shown.at(-1) > t) {
             after++
-            off.push(Math.max(...[m.a * B0[0] + m.e, m.d * B0[1] + m.f, m.a * B0[2], m.d * B0[3]].map((v, j) => Math.abs(v - b[j]))))
+            off.push(Math.max(...B0.map((v, j) => Math.abs([m.a * v + m.e, m.d * v + m.f, m.a * v, m.d * v][j % 4] - b[j]))))
           }
           await wait(16)
         }
@@ -1554,6 +1705,11 @@ const CHECKS = {
         ['cut short', small.slice(0, d + span.length / 2)],
       ]
       broken.filter(([, body]) => body === small).forEach(([what]) => problem(`n=${n}: ${what}: nothing changed`))
+      // Each error shown, none left uncaught: the errors and rejections no code caught, as each engine reports a
+      // worker's (Chromium as a page error, WebKit as "Unhandled Promise Rejection", Firefox as "JavaScript Error")
+      const uncaught = []
+      page.on('pageerror', e => uncaught.push(e.message))
+      page.on('console', m => { if (m.type() === 'error' && /Uncaught|Unhandled|JavaScript Error/.test(m.text())) uncaught.push(m.text()) })
       let body = small
       await page.route(`**/img/venn-${nn(n)}.svg`, route => route.fulfill(
         body === null ? { status: 404, body: '' } : { status: 200, contentType: 'image/svg+xml', body }))
@@ -1579,6 +1735,7 @@ const CHECKS = {
         if (got.shown) problem(`n=${n}, ${what}: ${got.shown} drawings shown`)
         if (String(got.image) !== `img/venn-${nn(n)}.png`) problem(`n=${n}, ${what}: the picture is ${got.image}, not the PNG`)
       }
+      if (uncaught.length) problem(`n=${n}: ${uncaught.length} errors left uncaught besides those shown, e.g. ${uncaught[0].slice(0, 200)}`)
       await page.unroute(`**/img/venn-${nn(n)}.svg`)
       // The viewer's own failures, each with the real file: no Worker to be had, canvas.js not found, and the worker
       // failing after the first drawing (an error event 100 ms after it). Each must show the error, saying what failed.
@@ -1607,8 +1764,8 @@ const CHECKS = {
         await p.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
         const text = await p.waitForSelector('#error', { state: 'visible', timeout: 60000 })
           .then(() => p.locator('#error').textContent(), () => null)
-        if (!text?.startsWith(`Couldn't load img/venn-${nn(n)}.svg (`) || !text.includes(want))
-          problem(`n=${n}, ${what}: the error says ${JSON.stringify(text)}, not that it couldn't load img/venn-${nn(n)}.svg (${want}...)`)
+        if (!text?.startsWith(`Couldn't load img/venn-${nn(n)}.svg (`) || !text.includes(want) || text.includes('undefined'))
+          problem(`n=${n}, ${what}: the error says ${JSON.stringify(text)}, not that it couldn't load img/venn-${nn(n)}.svg (${want}..., nothing undefined)`)
         await p.context().close()
       }
     }
@@ -1694,6 +1851,7 @@ const CHECKS = {
   async canvasTurn(page, problem) {
     for (const n of CANVAS) {
       const { side, angles } = await shape(n), { knots } = await source(n), lands = landing(angles)
+      stated(lands, n, problem)
       await openCanvas(page, n)
       const fit = fitted(await area(page), side)
       const s = knots[1].map((v, i) => Math.round((v - [fit.x, fit.y][i]) / fit.s)), m = zoomed(fit, fit, s, 64)

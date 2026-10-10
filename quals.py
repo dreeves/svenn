@@ -1243,7 +1243,10 @@ def qual_viewer_resize():
     """Replicata: in view.html?n=7 in a 1200 by 800 window, click +, then make the window 800 by 600. Expectata: the
     point at the centre of the space the drawing fits stays at that space's centre, and the drawing keeps its size
     relative to that space (twice the size that fits). Then make it 1200 by 100, too short for the controls: the drawing
-    still shows, at least half the window's shorter side across (overlapping the controls), never vanishing."""
+    still shows, at least half the window's shorter side across (overlapping the controls), never vanishing. Then make
+    it 1200 by 0, then 0 by 800 (1200 by 1 and 1 by 800 in WebKit, whose Playwright refuses a window of no pixels),
+    then 1200 by 800 again: each time the worker's drawing arrives, with no error (a canvas of no pixels, in a window of
+    none, once made the worker fail)."""
     return browser('resize')
 
 
@@ -1257,10 +1260,12 @@ def qual_viewer_links():
 
 @qual
 def qual_viewer_loading():
-    """Replicata: open view.html?n=7 while img/venn-07.svg is slow to arrive, and click +. Expectata: meanwhile the
-    viewer shows img/venn-07.png, the card's picture, placed as the drawing would be and zoomed by + as it would be,
-    a line saying that the full drawing is on its way (visible, as Playwright judges it), and seven swatches, all
-    disabled; once the SVG arrives, its seven curves replace the picture, the line goes, and the swatches work."""
+    """Replicata: open view.html?n=7 while img/venn-07.svg is slow to arrive, point at the turn button, and click +.
+    Expectata: meanwhile the viewer shows img/venn-07.png, the card's picture, placed as the drawing would be and
+    zoomed by + as it would be, a line saying that the full drawing is on its way (visible, as Playwright judges it),
+    seven swatches, all disabled, and the turn button disabled and greyed out: its face in site.css's --muted, not
+    --ink, and no hover look (its border stays --line under the pointer); once the SVG arrives, its seven curves
+    replace the picture, the line goes, the swatches work, and the turn button is enabled, its face in --ink."""
     return browser('loading')
 
 
@@ -1276,27 +1281,31 @@ def qual_viewer_download():
 @qual
 def qual_viewer_error():
     """Replicata: open view.html?n=4, for which there is no drawing; then view.html?n=abc, view.html?n= and
-    view.html?n=10000000; then view.html?n=7 with img/venn-07.svg's use 3 turning its curve a degree more than the
-    file does, so that no curve lands on curve 3 (see turn, above). Expectata: for n=4, a visible error saying that
-    img/venn-04.svg could not be loaded, ending
-    with the server's status in brackets, "(404)" (status text alone would be empty over HTTP/2, as GitHub Pages
-    serves it), four swatches, all disabled, no loading line and no broken picture in the drawing area; for the
-    others, an error within 3 seconds and no swatches; for the turned use, the error saying that img/venn-07.svg
-    could not be loaded with what went wrong in brackets in numbers and symbols alone, no words (AGENTS.md rule 7),
-    and the seven swatches disabled."""
+    view.html?n=10000000; then view.html?n=7 with img/venn-07.svg's use 3 turning its curve a degree more than the file
+    does, so that no curve lands on curve 3 (see turn, above); then view.html?n=7 as it is, where a turn fails, each way
+    in a fresh load of the page: with the worker unable to draw the view the turn asks for, and with the turn's
+    animation cancelled while it turns. Expectata: for n=4, a visible error saying that img/venn-04.svg could not be
+    loaded, ending with the server's status in brackets, "(404)" (status text alone would be empty over HTTP/2, as
+    GitHub Pages serves it), four swatches, all disabled, no loading line and no broken picture in the drawing area; for
+    the others, an error within 3 seconds and no swatches; for the turned use, the error saying that img/venn-07.svg
+    could not be loaded with what went wrong in brackets in numbers and symbols alone, no words (AGENTS.md rule 7), and
+    the seven swatches disabled; for each failed turn, within 10 seconds, the error saying that img/venn-07.svg could
+    not be loaded, with what went wrong in brackets."""
     return browser('error')
 
 
 @qual
 def qual_viewer_phone():
-    """Replicata: open the viewer for every n it shows, as SVG paths or on a canvas, on phones with touch screens, 375
-    by 667, 320 by 568, and 844 by 390 (one on its side); tap +.
-    Expectata: the controls (the back arrow and number; the SVG link, zoom buttons and turn button; the swatches and
-    their checkboxes) all fit in the window without overlapping each other, the page doesn't scroll, and every button
-    and link, and every checkbox's target (it and its label), is at least 44 by 44 pixels, Apple's guideline for
-    something to touch. After the tap, + looks as it did before it (no hover look stays
-    behind, as it does on touch screens unless hover styles are kept to devices that can hover). On the phone on its
-    side the swatches stand in a column along the right edge and the drawing fits in at least 300 pixels."""
+    """Replicata: open the viewer for every n it shows, as SVG paths or on a canvas, on phones with touch screens: 375
+    by 667 and 320 by 568, upright, and 844 by 390, 568 by 320 and 667 by 375, on their sides; tap +. Expectata: the
+    controls (the back arrow and number; the SVG link, zoom buttons and turn button; the swatches and their
+    checkboxes) all fit in the window without overlapping each other, the page doesn't scroll, and every button and
+    link, and every checkbox's target (it and its label), is at least 44 by 44 pixels, Apple's guideline for something
+    to touch. After the tap, + looks as it did before it (no hover look stays behind, as it does on touch screens
+    unless hover styles are kept to devices that can hover). The drawing's square page, fitted, lies in the window (on
+    the smaller phones it may be as small as half the window's shorter side and overlap the controls: dreeves chose
+    44-pixel targets over a larger drawing there). On the phones on their sides the swatches stand in a column along
+    the right edge (1rem from it at most), and on the 844 by 390 one the drawing fits in at least 300 pixels."""
     return browser('phone')
 
 
@@ -1318,49 +1327,60 @@ def qual_viewer_shading():
 @qual
 def qual_viewer_checks():
     """Replicata: open view.html?n=7 in a 1200 by 800 window while img/venn-07.svg is slow to arrive, then let it
-    arrive; click curve 0's checkbox, then curve 3's; focus curve 0's and press Space. Open it in a 600 by 800 window,
-    and on a phone with a touch screen, 375 by 667, where tap curve 6's checkbox twice. Expectata: one checkbox per
-    curve, all unchecked on opening and disabled until the drawing has arrived, as the swatches are; checkbox i under
-    swatch i and centred on it (beside it, to its right, where the swatches stand in a column, as in the 1200 by 800
-    window); each with an accessible name, a different one, holding i + 1 (as swatch i's title, "Curve i + 1", does).
-    Each click, Space and tap toggles its checkbox, and the shading follows: once its drawing has arrived, exactly the
-    probes of the checked set's label are shaded (as in qual_viewer_shading). The clicks and Space in the 1200 by 800
-    window leave the curves' SVG as it was (a MutationObserver sees no attribute, child or descendant of it change):
-    only the shading is drawn anew. On the touch screen each checkbox's target (it and its label) is at least 44 by 44
-    pixels, Apple's guideline, as in qual_viewer_phone."""
+    arrive; click curve 0's checkbox, then curve 3's; focus curve 0's and press Space; click the third swatch, which
+    hides curves 3 to 6, and then the fit button. Open it in a 600 by 800 window, and on a phone with a touch screen,
+    375 by 667, where tap curve 6's checkbox twice. Expectata: one checkbox per curve, all unchecked on opening and
+    disabled until the drawing has arrived, as the swatches are; checkbox i under swatch i and centred on it (beside it,
+    to its right, where the swatches stand in a column, as in the 1200 by 800 window); each with an accessible name, a
+    different one, holding i + 1 (as swatch i's title, "Curve i + 1", does). Each click, Space and tap toggles its
+    checkbox, and the shading follows: once its drawing has arrived, exactly the probes of the checked set's label are
+    shaded (as in qual_viewer_shading). The clicks and Space in the 1200 by 800 window leave the curves' SVG as it was
+    (a MutationObserver sees no attribute, child or descendant of it change): only the shading is drawn anew. Hiding
+    curves changes neither the checkboxes nor the shading: curve 3, hidden, stays checked, and once the fit button's
+    drawing has arrived, exactly the probes of its label are shaded. On the touch screen each checkbox's target (it and
+    its label) is at least 44 by 44 pixels, Apple's guideline, as in qual_viewer_phone."""
     return browser('checks')
 
 
 @qual
 def qual_viewer_slider():
     """Replicata: in view.html?n=7, press on the first swatch and drag along the swatches to the fifth, a swatch at a
-    time, then on past the last; press on the third and drag back past the first; with a finger on a touch screen,
-    drag from the second swatch to the fourth; then focus the fourth swatch and press →, ↓, ←, ↑, ↑, Home and End.
-    Expectata: the swatches are the stops of a slider. While a press that began on a swatch moves, the curves shown
-    are those up to and including the swatch nearest the pointer (curves 0 to k for swatch k, counting from 0, as in
-    qual_viewer_curves), with exactly their swatches pressed; past an end, that end's swatch. A key moves it a stop:
-    → and ↓ forward, ← and ↑ back, Home to the first and End to the last, and the focus goes to the swatch of the last
-    curve shown; while a swatch has the focus, the arrow keys don't pan the drawing. Nothing here moves the drawing."""
+    time, then on past the last; press on the third and drag back past the first; after each release, move the mouse
+    on, unpressed, over the sixth swatch and then over the drawing; with a finger on a touch screen, drag from the
+    second swatch to the fourth; then focus the fourth swatch and press →, ↓, ←, ↑, ↑, Home and End; then, all seven
+    curves shown, focus the third swatch and press ←. Expectata: the swatches are the stops of a slider. While a press
+    that began on a swatch moves, the curves shown are those up to and including the swatch nearest the pointer
+    (curves 0 to k for swatch k, counting from 0, as in qual_viewer_curves), with exactly their swatches pressed; past
+    an end, that end's swatch. The slide ends with the press: moving the mouse on afterwards, unpressed, changes
+    nothing. A key moves it a stop from the last curve shown, whichever swatch has the focus: → and ↓ forward, ← and
+    ↑ back, Home to the first and End to the last, and the focus goes to the swatch of the last curve shown (← on the
+    third swatch, all seven shown, shows curves 0 to 5 and focuses the sixth); while a swatch has the focus, the arrow
+    keys don't pan the drawing. Nothing here moves the drawing."""
     return browser('slider')
 
 
 @qual
 def qual_viewer_turn():
-    """Replicata: open view.html?n=3 and view.html?n=7; check {0} at n = 3 and {0, 2} at n = 7, focus the turn button
-    and press Enter; once it has turned, press Enter again; then click it, and click it again while it turns; then
-    check every curve and click it once more. Expectata: the button's face is τ/n with n's value (τ/3, τ/7), inside the
-    button. Each press and click turns the shading 1/n of a full turn anticlockwise about the page's centre, animated
-    (the element #region, which holds the shading and nothing else, turned about the page's centre by angles from 0 to
-    -360/n degrees, at least one strictly between), while the curves stay as they are; meanwhile the button stays
-    enabled and keeps the focus, so Enter pressed twice on it turns twice, and the click during a turn turns once more
-    after the turn under way. Once it has turned, the checkboxes checked are those of the curves the checked ones land
-    on (see turn, above), found from the file's angles: at n = 7, whose use i turns curve 0 by -360i/7 degrees, curve
-    i lands on curve i + 1 (mod 7), so {0, 2} becomes {1, 3}, then {2, 4}, {3, 5} and {4, 6}; at n = 3, whose use i
-    turns it by 120i, curve i lands on curve i - 1 (mod 3), so {0} becomes {2}, then {1}, {0} and {2}. The shading
-    stays turned until the drawing for the new set has arrived: from the moment the checkboxes change until a drawing
-    asked for after that is shown, #region is turned by exactly -360/n degrees; then exactly the probes of the new
-    set's label are shaded, #region's transform is the identity again, and the curves are as they were (each path's
-    data and colour unchanged). With every curve checked, the turn changes nothing: every curve lands on a curve."""
+    """Replicata: open view.html?n=3 and view.html?n=7 (with Google Fonts blocked, as in every browser qual); check {0}
+    at n = 3 and {0, 2} at n = 7, focus the turn button and press Enter; once it has turned, press Enter again; then
+    click it, and click it again while it turns; then check every curve and click it once more; then check {0} (or
+    {0, 2}) again, hold back each drawing the worker sends from a resize event on (which has the page draw anew), click
+    the button once the resize's drawing has come, let that drawing through once the turn has asked for its own, then
+    the rest. Expectata: the button's face is τ/n with n's value (τ/3, τ/7), inside the button, its τ a glyph under 0.7
+    em wide, not the box, an em wide, that a browser draws for a character its fonts lack. Each press and click turns
+    the shading 1/n of a full turn anticlockwise about the page's centre, animated (the element #region, which holds the
+    shading and nothing else, turned about the page's centre by angles from 0 to -360/n degrees, at least one strictly
+    between), while the curves stay as they are; meanwhile the button stays enabled and keeps the focus, so Enter
+    pressed twice on it turns twice, and the click during a turn turns once more after the turn under way. Once it has
+    turned, the checkboxes checked are those of the curves the checked ones land on (see turn, above), found from the
+    file's angles: at n = 7, whose use i turns curve 0 by -360i/7 degrees, curve i lands on curve i + 1 (mod 7), so
+    {0, 2} becomes {1, 3}, then {2, 4}, {3, 5} and {4, 6}; at n = 3, whose use i turns it by 120i, curve i lands on
+    curve i - 1 (mod 3), so {0} becomes {2}, then {1}, {0} and {2}. The shading stays turned until the drawing for the
+    new set has arrived: from the moment the checkboxes change until a drawing asked for after that is shown, #region is
+    turned by exactly -360/n degrees; then exactly the probes of the new set's label are shaded, #region's transform is
+    the identity again, and the curves are as they were (each path's data and colour unchanged). With every curve
+    checked, the turn changes nothing: every curve lands on a curve. The resize's drawing, shown after the turn asked
+    for its own, leaves #region turned: it was asked for before."""
     return browser('turn')
 
 
@@ -1401,14 +1421,14 @@ def qual_viewer_canvas_curves():
 def qual_viewer_canvas_settle():
     """Replicata: open view.html?n=23 and wait for its drawing; drag the drawing as a hand does, a move every 16 ms,
     then turn the wheel and pinch the same way, then stop; then show curve 0 alone, and once it is drawn press Escape
-    and at once drag again, until the drawing of all 23 curves has arrived. Expectata: meanwhile nothing is drawn
-    anew: the page asks its worker for nothing (no postMessage), shows no new drawing on its canvas, and draws on or
-    resizes no canvas itself; at every event a CSS transform on the div #picture moves the picture already drawn, the
-    canvas with it (its box on the screen within half a pixel of where the transform puts the box it had). Within 2
-    seconds of the last event the page asks for a new drawing; until that arrives the old one stays where the gestures
-    left it (within half a pixel), and once it has arrived, the picture's transform is the identity again and the
-    canvas matches its reference where the moved picture showed the drawing, with lines as wide as at fit. A drawing
-    asked for before a drag and arriving during it appears where the picture's transform puts it (within half a
+    and at once drag again, until the drawing of all 23 curves has arrived. Expectata: meanwhile nothing is drawn anew:
+    the page asks its worker for nothing (no postMessage), shows no new drawing on its canvas, and draws on or resizes
+    no canvas itself; at every event a CSS transform on the div #picture moves the picture already drawn, the canvas and
+    the shading's with it (their boxes on the screen within half a pixel of where the transform puts the boxes they
+    had). Within 2 seconds of the last event the page asks for a new drawing; until that arrives the old one stays where
+    the gestures left it (within half a pixel), and once it has arrived, the picture's transform is the identity again
+    and the canvas matches its reference where the moved picture showed the drawing, with lines as wide as at fit. A
+    drawing asked for before a drag and arriving during it appears where the picture's transform puts it (within half a
     pixel)."""
     return browser('canvasSettle')
 
@@ -1437,13 +1457,14 @@ def qual_viewer_canvas_loading():
 def qual_viewer_canvas_error():
     """Replicata: open view.html?n=23 with img/venn-23.svg replaced by a small drawing of 23 curves in venn.py's format
     (curve 0 cut to a span and another back to its start); then with img/venn-23.svg answering 404; then with the small
-    drawing changed in one way each: an angle of NaN; a stroke-width of Infinity; a 24th use; the last use gone;
-    another viewBox; an L command in the path; a use of another href; cut short halfway through the path; and then,
-    with img/venn-23.svg as it is, with no Worker to be had, with canvas.js answering 404, and with the worker failing
-    after its first drawing. Expectata: the small drawing as it is is drawn; each of the broken ones shows a visible
-    error saying that img/venn-23.svg couldn't be loaded, with what went wrong in brackets ("(404)" for the 404), and no
-    loading line; the 23 swatches stay disabled, nothing is drawn, and the PNG stays as the picture; and each of the
-    last three shows the same error, with what failed in its brackets (canvas.js, for its 404)."""
+    drawing changed in one way each: an angle of NaN; a stroke-width of Infinity; a 24th use; the last use gone; another
+    viewBox; an L command in the path; a use of another href; cut short halfway through the path; and then, with
+    img/venn-23.svg as it is, with no Worker to be had, with canvas.js answering 404, and with the worker failing after
+    its first drawing. Expectata: the small drawing as it is is drawn; each of the broken ones shows a visible error
+    saying that img/venn-23.svg couldn't be loaded, with what went wrong in brackets ("(404)" for the 404), and no
+    loading line; the 23 swatches stay disabled, nothing is drawn, and the PNG stays as the picture; no error is left
+    uncaught (the console reports none that no code caught, from the page or its worker); and each of the last three
+    shows the same error, with what failed in its brackets (canvas.js, for its 404), never "undefined"."""
     return browser('canvasError')
 
 
@@ -1489,13 +1510,30 @@ def qual_viewer_canvas_shading():
 def qual_viewer_canvas_turn():
     """Replicata: open view.html?n=23 and zoom in by 64 about a point P on curve 0, as in qual_viewer_canvas_fit; check
     the curves of the label most of the probes there have, and click the turn button; once it has turned, drag the
-    drawing so that the point P turned by -360/23 degrees about the page's centre is where P was. Expectata: the
-    button, whose face is τ/23, turns the shading as in qual_viewer_turn, and it stays turned until the drawing for the
-    new set has arrived;
-    then the checkboxes checked are those of the curves the checked ones land on: curve i lands on curve i + 1
-    (mod 23), since use i turns curve 0 by -360i/23 degrees; exactly the probes of the new set's label are shaded, at
-    the places the qual's own arithmetic gives them; and the canvas of the curves matches its reference."""
+    drawing so that the point P turned by -360/23 degrees about the page's centre is where P was. Expectata: the button,
+    whose face is τ/23 (its τ a glyph, as in qual_viewer_turn), turns the shading as in qual_viewer_turn, and it stays
+    turned until the drawing for the new set has arrived; then the checkboxes checked are those of the curves the
+    checked ones land on: curve i lands on curve i + 1 (mod 23), since use i turns curve 0 by -360i/23 degrees; exactly
+    the probes of the new set's label are shaded, at the places the qual's own arithmetic gives them; and the canvas of
+    the curves matches its reference."""
     return browser('canvasTurn')
+
+
+@qual
+def qual_canvas_outline():
+    """Replicata: in node, without a browser (tools/outline_quals.mjs), run canvas.js's own parse(), tree() and
+    outline() on img/venn-NN.svg for every n the viewer shows, for the views of a 1200 by 800 window at fit (the page
+    700 pixels across) and zoomed in by 4, 16 and 64 about five knots of curve 0, with tol half a pixel, as draw()
+    passes it for a shading canvas with a pixel to a CSS pixel. Expectata: each run of spans that outline() replaces by
+    the chord between its ends, where the run's box (bounding its control points) meets the view, stays within 2 tol of
+    that chord, the bound outline()'s comment gives (tried at 16 points a span, evenly spaced in its parameter from its
+    start), so that the shading's edge strays at most about a pixel from the curve. (With tree()'s flatness missing its
+    chords' term, chords strayed up to 22 tol at n = 11 and 1794 at n = 19, and the browser quals' views of the shading
+    missed it.)"""
+    run = subprocess.run(['node', str(HERE / 'tools' / 'outline_quals.mjs'), *map(str, VIEWED)],
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr[-3000:]
+    return [p for ps in json.loads(run.stdout).values() for p in ps]
 
 
 @qual

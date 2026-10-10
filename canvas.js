@@ -204,9 +204,10 @@ function draw({ colours, angles, width, xy, tree, cells: { paths, boxes, spans }
   // The shading has no lines, and its edges must hide under the curves' (as SVG paths, as wide as at fit), so its
   // canvas has rs pixels to a CSS pixel: as many as the curves', but at least one, unless the screen has fewer
   const rs = Math.min(dpr, Math.max(1, r))
+  // Each at least a pixel each way: drawImage() throws on a canvas of none, as in a window of none
   for (const [c, q] of [[canvas, r], [shading, rs]]) {
-    c.width = Math.round(w * q)        // which also clears it and resets the context
-    c.height = Math.round(h * q)
+    c.width = Math.max(1, Math.round(w * q))   // which also clears it and resets the context
+    c.height = Math.max(1, Math.round(h * q))
   }
   ctx.lineCap = ctx.lineJoin = 'round'
   ctx.lineWidth = width * s / fit      // in page units, under the transforms below
@@ -274,9 +275,13 @@ function draw({ colours, angles, width, xy, tree, cells: { paths, boxes, spans }
   setTimeout(batch)
 }
 
-// The first message, the file's bytes, read; and the views, every message after it, drawn once it is
+// The first message, the file's bytes, read; and the views, every message after it, drawn once it is. Each error
+// reaches the page: the file's, posted (drawing.catch(), below); one draw() throws before its first batch, posted too,
+// which for each view after the file failed to be read is the file's again (so that none is left uncaught); and one in
+// a batch, as the worker's error event.
 const drawing = new Promise(ok => addEventListener('message', ({ data }) => {
-  onmessage = ({ data }) => drawing.then(d => draw(d, data))   // not called for this message, which is being handled
+  // not called for this message, which is being handled
+  onmessage = ({ data }) => drawing.then(d => draw(d, data)).catch(e => postMessage({ error: e.message }))
   ok(data)
 }, { once: true }))
   .then(b => parse(new Uint8Array(b), Number(params.get('n'))))
