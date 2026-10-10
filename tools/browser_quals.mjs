@@ -53,6 +53,8 @@ const ctm = page => page.evaluate(() => {
 const under = (m, [x, y]) => [(x - m.e) / m.a, (y - m.f) / m.d]   // the page point drawn at screen point (x, y)
 const at = (m, [x, y]) => [m.a * x + m.e, m.d * y + m.f]          // the screen point where page point (x, y) is drawn
 const far = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1])
+// Whether boxes a and b, each [left, top, right, bottom], overlap by more than e pixels each way
+const meet = (a, b, e = 0) => a[0] < b[2] - e && b[0] < a[2] - e && a[1] < b[3] - e && b[1] < a[3] - e
 const fmt = p => `(${p.map(v => v.toFixed(2)).join(', ')})`
 // Each curve's line on screen: how it scales, and how wide it is
 const strokes = page => page.evaluate(() => [...document.querySelectorAll('#stage path')].map(p => {
@@ -228,9 +230,10 @@ async function openCanvas(page, n) {
   await page.waitForFunction(n => document.querySelectorAll('#curves button:enabled').length === n, n)
 }
 
-// A page in a context of its own, a window w by h with dpr device pixels to a CSS pixel
-async function sized(page, w, h, dpr) {
-  const context = await page.context().browser().newContext({ viewport: { width: w, height: h }, deviceScaleFactor: dpr })
+// A page in a context of its own, a window w by h with dpr device pixels to a CSS pixel, and a touch screen if hasTouch
+// (which makes (pointer: coarse) match, and (hover: none), in all three engines)
+async function sized(page, w, h, dpr, hasTouch = false) {
+  const context = await page.context().browser().newContext({ viewport: { width: w, height: h }, deviceScaleFactor: dpr, hasTouch })
   const p = await context.newPage()
   p.setDefaultTimeout(10000)
   await p.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort())
@@ -259,6 +262,7 @@ const FAR = 5                         // pixels on screen from every other curve
 const site = await readFile(path.join(ROOT, 'site.css'), 'utf8')
 const hex = name => site.match(new RegExp(`--${name}: #([0-9a-f]{6});`))[1].match(/../g).map(h => parseInt(h, 16))
 const SHADED = hex('line'), UNSHADED = hex('paper')   // a probe's colour, shaded or not
+const colour = name => `rgb(${hex(name).join(', ')})`   // site.css's colour --name, as getComputedStyle() gives it
 const curvesIn = L => `{${[...Array(31).keys()].filter(i => L >> i & 1).join(', ')}}`   // label L's curves, "{0, 2}"
 
 // The pixels of a PNG with 8 bits a channel, RGB or RGBA, not interlaced, as Playwright's screenshots are: its width
@@ -429,17 +433,17 @@ async function shows(page, ps, want, what, problem, lines = []) {
   const { w, h, rgba } = png(await page.screenshot())
   const size = await page.evaluate(() => [innerWidth, innerHeight])
   if (String([w, h]) !== String(size)) problem(`${what}: a screenshot of ${w} by ${h} pixels for a window of ${size}`)
-  const colour = ({ x, y }) => [...rgba.subarray(4 * (y * w + x), 4 * (y * w + x) + 3)]
-  const wrong = ps.filter(p => colour(p).some((v, i) => Math.abs(v - (p.label === want ? SHADED : UNSHADED)[i]) > 8))
+  const pixel = ({ x, y }) => [...rgba.subarray(4 * (y * w + x), 4 * (y * w + x) + 3)]
+  const wrong = ps.filter(p => pixel(p).some((v, i) => Math.abs(v - (p.label === want ? SHADED : UNSHADED)[i]) > 8))
   const of = ps.filter(p => p.label === want).length
   if (!of) problem(`${what}: none of the ${ps.length} probes in view has label ${want}`)
   if (wrong.length) problem(`${what}: ${wrong.length} of ${ps.length} probes wrong (${of} of label ${want}, to be shaded), e.g. ` +
-                            wrong.slice(0, 3).map(p => `(${p.x}, ${p.y}), label ${p.label}: rgb(${colour(p)})`).join('; '))
+                            wrong.slice(0, 3).map(p => `(${p.x}, ${p.y}), label ${p.label}: rgb(${pixel(p)})`).join('; '))
   const beside = lines.filter(p => p.label === want || (p.label | 1 << p.curve) === want)
-  const hidden = beside.filter(p => colour(p).some((v, i) => Math.abs(v - p.colour[i]) > 8))
+  const hidden = beside.filter(p => pixel(p).some((v, i) => Math.abs(v - p.colour[i]) > 8))
   if (lines.length && !beside.length) problem(`${what}: none of the ${lines.length} pixels a line covers is beside the shaded region`)
   if (hidden.length) problem(`${what}: ${hidden.length} of the ${beside.length} pixels a line covers beside the shaded region not in its curve's ` +
-                             `colour, e.g. ${hidden.slice(0, 3).map(p => `(${p.x}, ${p.y}) on curve ${p.curve}: rgb(${colour(p)}), not rgb(${p.colour})`).join('; ')}`)
+                             `colour, e.g. ${hidden.slice(0, 3).map(p => `(${p.x}, ${p.y}) on curve ${p.curve}: rgb(${pixel(p)}), not rgb(${p.colour})`).join('; ')}`)
 }
 
 // The mapping the SVG's curves are drawn at, from their screen CTM
@@ -498,23 +502,24 @@ const landed = (L, lands) => lands.reduce((M, j, i) => M | (L >> i & 1) << j, 0)
 // have each been followed by a drawing shown and a frame has passed after the last (or a minute has). Each entry has
 // its kind (start, frame, ask or shown), the angle #region is turned by (degrees, clockwise on screen) and its
 // transform's entries (a turn has a = d, b = -c, e = f = 0 and a² + b² = 1), its transform-origin, the label checked,
-// and whether the turn button is enabled and has the focus; and where the curves are, and how they show: #picture's
+// and whether the turn button is enabled and has the focus; and where the curves are, and how they look: #picture's
 // transform, the boxes on the screen of the SVG, its paths and the curves' canvas (every canvas in #stage outside
-// #region), the opacity and visibility of each of those and of their ancestors up to #stage, #region's z-index (which
-// puts it beneath them), and whether #region holds its canvas alone.
+// #region), the opacity, visibility, filter and stroke-opacity of each of those and of their ancestors up to #stage
+// (look), #region's z-index (which puts it beneath them), and whether #region holds its canvas alone.
 async function turns(page, k, act) {
   await page.evaluate(k => {
     const region = document.getElementById('region'), button = document.getElementById('turn'), log = []
     const boxes = [...document.querySelectorAll('#curves input[type=checkbox]')], picture = document.getElementById('picture')
     const curves = [...document.querySelectorAll('#stage svg, #stage path, #stage canvas')].filter(e => !region.contains(e))
-    const shown = [...curves, picture, document.getElementById('stage')]
+    const fading = [...curves, picture, document.getElementById('stage')]   // whose look could fade the curves
     const note = kind => {
       const s = getComputedStyle(region), m = s.transform === 'none' ? new DOMMatrix() : new DOMMatrix(s.transform)
       log.push({ kind, angle: Math.atan2(m.b, m.a) * 180 / Math.PI, m: [m.a, m.b, m.c, m.d, m.e, m.f], origin: s.transformOrigin,
                  label: boxes.reduce((L, c, i) => L | c.checked << i, 0), enabled: !button.disabled, focus: document.activeElement === button,
                  picture: getComputedStyle(picture).transform,
                  curves: curves.flatMap(e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height] }),
-                 shown: shown.map(e => { const c = getComputedStyle(e); return `${c.opacity} ${c.visibility}` }).join(', '), beneath: s.zIndex,
+                 look: fading.map(e => { const c = getComputedStyle(e); return `${c.opacity} ${c.visibility} ${c.filter} ${c.strokeOpacity}` }).join(', '),
+                 beneath: s.zIndex,
                  alone: region.childElementCount === 1 && region.firstElementChild instanceof HTMLCanvasElement })
     }
     const wrap = (proto, name, kind) => {   // log each call of proto[name], until the returned function puts it back
@@ -551,8 +556,8 @@ async function turns(page, k, act) {
 // strictly between, and labels[j - 1] checked; from that ask until a drawing is shown after it, turned by exactly
 // -360/n degrees, and labels[j] checked; after the last turn's drawing, not turned. Throughout, the turn button enabled,
 // and if keys, with the focus; the curves where they were at the first entry (#picture's transform the same, and the
-// boxes to 0.01 pixel) and showing as they did (the same opacities and visibilities, and #region's z-index); and #region
-// holding its canvas alone. (Angles to 1e-3 degrees: the computed transform gives six digits.)
+// boxes to 0.01 pixel) and looking as they did (the same look, and #region's z-index); and #region holding its canvas
+// alone. (Angles to 1e-3 degrees: the computed transform gives six digits.)
 function turnedWell(log, n, o2, labels, keys, what, problem) {
   const count = labels.length - 1, asks = log.flatMap((e, i) => e.kind === 'ask' ? [i] : [])
   // shown[j]: the end of the drawing shown first after ask j, the last of the drawings shown with it (the page shows
@@ -583,8 +588,8 @@ function turnedWell(log, n, o2, labels, keys, what, problem) {
       ['focus', keys && !e.focus, 'the turn button without the focus'],
       ['curves', e.picture !== log[0].picture || !(moved <= 0.01),
        `the curves moved: #picture's transform ${e.picture}, first ${log[0].picture}; their boxes up to ${moved} pixels from the first`],
-      ['shown', e.shown !== log[0].shown, `the curves' opacities and visibilities (the SVG's, its paths', the curves' canvas's, ` +
-       `#picture's and #stage's) are ${e.shown}, not ${log[0].shown} as at first`],
+      ['look', e.look !== log[0].look, `the curves' opacities, visibilities, filters and stroke-opacities (the SVG's, its paths', ` +
+       `the curves' canvas's, #picture's and #stage's) are ${e.look}, not ${log[0].look} as at first`],
       ['beneath', e.beneath !== log[0].beneath, `#region's z-index is ${e.beneath}, not ${log[0].beneath} as at first`],
       ['region', !e.alone, '#region holds more than its canvas'],
     ]) {
@@ -599,24 +604,33 @@ const stopsOf = page => page.evaluate(() => [...document.querySelectorAll('.stop
   const r = s.getBoundingClientRect()
   return [r.left, r.top, r.right, r.bottom]
 }))
+// The centres on the screen of the swatches, each [x, y]
+const centresOf = page => page.evaluate(() => [...document.querySelectorAll('#curves button')].map(b => {
+  const r = b.getBoundingClientRect()
+  return [r.left + r.width / 2, r.top + r.height / 2]
+}))
 // Expect exactly swatch k to be drawn as the slider's knob (quals.py: qual_viewer_slider): larger, its box on the screen
-// at least 1.1 times as wide and as tall as every other swatch's, which are all one size; ringed in --ink inside its
-// border (a box-shadow, inset, of that colour, which no other swatch has), and with no outline unless it has the focus,
-// since the focus ring is one; its fill its curve's colour, colours[k], if colours are given. Growing, it covers no
-// other stop (their boxes and its own meet nowhere), and every checkbox's target, its own included, still takes the
-// pointer over all of it (hit-testing a pixel in from its corners, at the middles of its sides and at its centre finds
-// it). If stops is given (stopsOf()), every stop is where it says.
+// at least 1.1 times as wide and as tall as every other swatch's, which are all one size; ringed, inside its border, in
+// --ink, as inset box-shadows: a layer of --ink at least 4 pixels wide (before it grows) atop one of --paper at least
+// 2 pixels wider, the gap between the ring and its fill; no other swatch with --ink in its box-shadow or its border;
+// with an outline, the focus ring, while the focus ring is due (:focus-visible), and with none without the focus; that
+// outline beyond its border (outline-offset not negative) and clear of every checkbox (the box on the screen of its
+// outer edge, a circle about the knob's centre, meets no checkbox's box); and its fill its curve's colour, colours[k],
+// if colours are given. Growing, it covers no other stop (their boxes and its own meet nowhere), and every checkbox's
+// target, its own included, still takes the pointer over all of it (hit-testing a pixel in from its corners, at the
+// middles of its sides and at its centre finds it). If stops is given (stopsOf()), every stop is where it says.
 async function knobbed(page, k, what, problem, stops = null, colours = null) {
-  const INK = `rgb(${hex('ink').join(', ')})`
   const got = await page.evaluate(() => {
     const box = e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom] }
     const targets = [...document.querySelectorAll('.stop label')]
     return {
       swatches: [...document.querySelectorAll('#curves button')].map(b => {
         const s = getComputedStyle(b)
-        return { box: box(b), fill: s.backgroundColor, shadow: s.boxShadow, outline: s.outlineStyle, focus: document.activeElement === b }
+        return { box: box(b), side: b.offsetWidth, fill: s.backgroundColor, shadow: s.boxShadow, border: s.borderTopColor,
+                 outline: s.outlineStyle, offset: parseFloat(s.outlineOffset), width: parseFloat(s.outlineWidth),
+                 focus: document.activeElement === b, due: b.matches(':focus-visible') }
       }),
-      stops: [...document.querySelectorAll('.stop')].map(box),
+      checkboxes: [...document.querySelectorAll('#curves input[type=checkbox]')].map(box),
       // the targets' points where hit-testing finds something else
       taken: targets.flatMap((t, i) => {
         const [l, top, r, b] = box(t)
@@ -625,33 +639,51 @@ async function knobbed(page, k, what, problem, stops = null, colours = null) {
       }),
     }
   })
-  const size = ([l, t, r, b]) => [r - l, b - t], meet = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+  const boxes = await stopsOf(page), INK = colour('ink'), PAPER = colour('paper')
+  const size = ([l, t, r, b]) => [r - l, b - t]
   const knob = got.swatches[k], others = got.swatches.filter((_, i) => i !== k), [w, h] = size(others[0].box)
-  const layers = s => s.split(/,(?![^(]*\))/)   // a box-shadow's layers (rgb() has commas of its own)
+  const layers = s => s.split(/,(?![^(]*\))/).map(l => l.trim())   // a box-shadow's layers (rgb() has commas of its own)
   if (others.some(s => size(s.box).some((v, i) => Math.abs(v - [w, h][i]) > 0.01)))
     problem(`${what}: the swatches but swatch ${k}, the knob, are of sizes ${others.map(s => size(s.box).map(v => v.toFixed(2)).join(' by ')).join(', ')}, not all one`)
   if (!(size(knob.box)[0] >= 1.1 * w && size(knob.box)[1] >= 1.1 * h))
     problem(`${what}: swatch ${k}, the knob, is ${size(knob.box).map(v => v.toFixed(2)).join(' by ')}, not at least 1.1 times the others' ${w.toFixed(2)} by ${h.toFixed(2)}`)
-  if (!layers(knob.shadow).some(l => l.includes(INK) && l.includes('inset'))) problem(`${what}: swatch ${k}, the knob, has box-shadow ${knob.shadow}, no inset ring in ${INK}`)
-  const ringed = others.filter(s => layers(s.shadow).some(l => l.includes(INK)))
+  // its ring: the inset layers of its box-shadow that are rings, [colour, spread], topmost first
+  const rings = layers(knob.shadow).flatMap(l => {
+    const m = l.match(/^(rgba?\([^)]*\)) 0px 0px 0px ([\d.]+)px inset$/)
+    return m ? [[m[1], Number(m[2])]] : []
+  })
+  const ink = rings.findIndex(([c, spread]) => c === INK && spread >= 4)
+  if (!(ink >= 0 && rings.some(([c, spread], i) => i > ink && c === PAPER && spread >= rings[ink][1] + 2)))
+    problem(`${what}: swatch ${k}, the knob, has box-shadow ${knob.shadow}, not a ring of ${INK} at least 4 pixels wide atop one of ${PAPER} 2 pixels wider`)
+  const ringed = others.filter(s => s.border === INK || layers(s.shadow).some(l => l.includes(INK)))
   if (ringed.length) problem(`${what}: ${ringed.length} swatches besides swatch ${k}, the knob, ringed in ${INK}`)
   if (!knob.focus && knob.outline !== 'none') problem(`${what}: swatch ${k}, the knob, without the focus, has outline ${knob.outline}`)
+  if (knob.due && knob.outline === 'none') problem(`${what}: swatch ${k}, the knob, with the focus ring due (:focus-visible), has no outline`)
+  // the focus ring's outer edge: the circle about the knob's centre, (side / 2 + offset + width) times the knob's scale
+  // in radius
+  const [l, t, r, b] = knob.box, R = (knob.side / 2 + knob.offset + knob.width) * (r - l) / knob.side
+  const ring = [(l + r) / 2 - R, (t + b) / 2 - R, (l + r) / 2 + R, (t + b) / 2 + R]
+  const under = knob.outline === 'none' ? [] : got.checkboxes.flatMap((c, i) => meet(ring, c) ? [i] : [])
+  if (knob.outline !== 'none' && !(knob.offset >= 0)) problem(`${what}: swatch ${k}, the knob, has its focus ring at outline-offset ${knob.offset}, within its border`)
+  if (under.length) problem(`${what}: swatch ${k}, the knob, has its focus ring, reaching ${R.toFixed(2)} pixels from its centre, under checkboxes ${under}, e.g. at (${got.checkboxes[under[0]].map(v => v.toFixed(2))})`)
   if (colours && knob.fill !== colours[k]) problem(`${what}: swatch ${k}, the knob, is ${knob.fill}, not its curve's ${colours[k]}`)
-  const over = got.stops.flatMap((s, i) => i !== k && meet(knob.box, s) ? [i] : [])
+  const over = boxes.flatMap((s, i) => i !== k && meet(knob.box, s) ? [i] : [])
   if (over.length) problem(`${what}: swatch ${k}, the knob, at ${knob.box.map(v => v.toFixed(2))}, covers stops ${over}`)
   if (got.taken.length) problem(`${what}: checkbox targets not taking the pointer at ${got.taken.slice(0, 3).join('; ')}`)
-  const moved = stops ? got.stops.flatMap((s, i) => s.some((v, j) => Math.abs(v - stops[i][j]) > 0.01) ? [i] : []) : []
-  if (moved.length) problem(`${what}: stops ${moved} moved, e.g. stop ${moved[0]} from ${stops[moved[0]]} to ${got.stops[moved[0]]}`)
+  const moved = stops ? boxes.flatMap((s, i) => s.some((v, j) => Math.abs(v - stops[i][j]) > 0.01) ? [i] : []) : []
+  if (moved.length) problem(`${what}: stops ${moved} moved, e.g. stop ${moved[0]} from ${stops[moved[0]]} to ${boxes[moved[0]]}`)
 }
 
-// In the page: of the note sel (#status, #slow or #error, shown), the points 4 pixels apart across its box (a pixel in
-// from its edges) where something lies over it, with the note made to take the pointer for the purpose, so that
-// hit-testing finds it; and, the note as it is, the swatches and checkbox targets with something over them at such
-// points across where their boxes meet the note's. Something lies over element e at a point when e is among the
-// elements hit-testing finds there, but not the first (where e isn't among them, as at a rounded corner, nothing does).
+// In the page: of the note sel (#status, #slow or #error, shown), its box, and whether it lies wholly in the window
+// (inside); the points 4 pixels apart across its box (a pixel in from its edges) where something lies over it, with the
+// note made to take the pointer for the purpose, so that hit-testing finds it (covered); and, the note as it is, the
+// points across it where hit-testing finds something else first, which takes the pointer there (missed), and the
+// swatches and checkbox targets with something over them at such points across where their boxes meet the note's
+// (blocked). Something lies over element e at a point when e is among the elements hit-testing finds there, but not the
+// first (where e isn't among them, as at a rounded corner, nothing does).
 function unhidden(sel) {
   const note = document.querySelector(sel), r = note.getBoundingClientRect(), was = note.style.pointerEvents
-  const name = e => `${e.tagName.toLowerCase()}${e.id ? `#${e.id}` : ''}${e.title ? ` "${e.title}"` : ''}`
+  const name = e => e ? `${e.tagName.toLowerCase()}${e.id ? `#${e.id}` : ''}${e.title ? ` "${e.title}"` : ''}` : 'nothing'
   const across = ({ left, top, right, bottom }) => {
     const points = []
     for (let y = top + 1; y <= bottom - 1; y += 4) for (let x = left + 1; x <= right - 1; x += 4) points.push([x, y])
@@ -661,15 +693,20 @@ function unhidden(sel) {
     const es = document.elementsFromPoint(x, y)
     return es.findIndex(f => e.contains(f)) > 0 ? [`(${x.toFixed(1)}, ${y.toFixed(1)}): ${name(es[0])}`] : []
   }
+  const missed = across(r).flatMap(([x, y]) => {
+    const e = document.elementFromPoint(x, y)
+    return note.contains(e) ? [] : [`(${x.toFixed(1)}, ${y.toFixed(1)}): ${name(e)}`]
+  })
   note.style.pointerEvents = 'auto'
   const covered = across(r).flatMap(p => over(note, p))
   note.style.pointerEvents = was
   const blocked = [...document.querySelectorAll('#curves button, .stop label')].flatMap(t => {
     const b = t.getBoundingClientRect()
-    const meet = { left: Math.max(b.left, r.left), top: Math.max(b.top, r.top), right: Math.min(b.right, r.right), bottom: Math.min(b.bottom, r.bottom) }
-    return across(meet).flatMap(p => over(t, p)).slice(0, 1).map(o => `${name(t)} at ${o}`)
+    const shared = { left: Math.max(b.left, r.left), top: Math.max(b.top, r.top), right: Math.min(b.right, r.right), bottom: Math.min(b.bottom, r.bottom) }
+    return across(shared).flatMap(p => over(t, p)).slice(0, 1).map(o => `${name(t)} at ${o}`)
   })
-  return { covered, blocked }
+  return { box: [r.left, r.top, r.right, r.bottom], inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
+           covered, missed, blocked }
 }
 
 // Expect the turn button's face to say τ/n, n's value, to fit inside the button, and its τ to be a glyph, under 0.7
@@ -689,6 +726,12 @@ async function faced(page, n, problem) {
     problem(`n=${n}: the turn button's face, at ${text.map(Math.round)}, spills out of it, at ${box.map(Math.round)}`)
   if (!(tau < 0.7)) problem(`n=${n}: the turn button's τ is ${tau.toFixed(3)} em wide, not under 0.7: a missing glyph's box`)
 }
+
+// The error view.html shows, "Couldn't load <file> (<what went wrong>)", as [file, what went wrong], or null for any
+// other text (or none); and whether what went wrong is a message "undefined" (alone, or after "canvas.js: "), which
+// tells nobody anything
+const said = text => text?.match(/^Couldn't load (\S+) \((.+)\)$/)?.slice(1) ?? null
+const vague = why => /(^|: )undefined$/.test(why)
 
 const CHECKS = {
   async fit(page, problem) {
@@ -1106,21 +1149,36 @@ const CHECKS = {
     await page.route(`**/img/venn-${nn(SMALL)}.svg`, async route => { await gate; await route.continue() })
     await page.goto(`${BASE}/view.html?n=${SMALL}`)
     await page.waitForSelector('#curves button')
+    // visible: how many of the curves' paths are not hidden; pressed: each swatch's aria-pressed, 1 or 0
     const state = async () => ({ ...(await page.evaluate(() => ({
       image: [...document.querySelectorAll('#stage image')].map(i => i.getAttribute('href')),
       curves: document.querySelectorAll('#stage path').length,
+      visible: [...document.querySelectorAll('#stage path')].filter(p => getComputedStyle(p).display !== 'none').length,
       enabled: document.querySelectorAll('#curves button:enabled').length,
       swatches: document.querySelectorAll('#curves button').length,
+      pressed: [...document.querySelectorAll('#curves button')].map(b => b.getAttribute('aria-pressed') === 'true' ? 1 : 0).join(''),
       turn: [document.getElementById('turn').disabled, getComputedStyle(document.getElementById('turn')).color] }))),
       status: await page.locator('#status').isVisible() })
-    const colour = name => `rgb(${hex(name).join(', ')})`   // site.css's colour --name, as getComputedStyle() gives it
+    const all = '1'.repeat(SMALL)
     const s0 = await state()
-    const want0 = { image: [`img/venn-${nn(SMALL)}.png`], curves: 0, enabled: 0, swatches: SMALL, turn: [true, colour('muted')], status: true }
+    const want0 = { image: [`img/venn-${nn(SMALL)}.png`], curves: 0, visible: 0, enabled: 0, swatches: SMALL, pressed: all, turn: [true, colour('muted')], status: true }
     if (JSON.stringify(s0) !== JSON.stringify(want0)) problem(`while the SVG loads: ${JSON.stringify(s0)}, not ${JSON.stringify(want0)}`)
     // The disabled turn button has no hover look either
     await page.hover('#turn')
     const border = await page.evaluate(() => getComputedStyle(document.getElementById('turn')).borderTopColor)
     if (border !== colour('line')) problem(`while the SVG loads, the turn button, hovered over, has border ${border}, not ${colour('line')}`)
+    // A press on the third swatch, disabled, and a drag along the swatches to the fifth change nothing: every swatch
+    // still pressed, and the cursor the disabled swatches' default meanwhile
+    const centres = await centresOf(page)
+    await page.mouse.move(...centres[2])
+    await page.mouse.down()
+    await page.mouse.move(...centres[4], { steps: 4 })
+    const cursor = await page.evaluate(([x, y]) => getComputedStyle(document.elementFromPoint(x, y)).cursor, centres[4])
+    await page.mouse.up()
+    if (cursor !== 'default') problem(`while the SVG loads, pressing on the third swatch and dragging to the fifth: the cursor there is ${cursor}, not default`)
+    const pressed = await state()
+    if (JSON.stringify(pressed) !== JSON.stringify(want0))
+      problem(`while the SVG loads, after a press on the third swatch and a drag to the fifth: ${JSON.stringify(pressed)}, not ${JSON.stringify(want0)}`)
     const box = () => page.evaluate(() => {
       const r = document.querySelector('#stage image').getBoundingClientRect()
       return [r.left, r.top, r.width, r.height]
@@ -1135,7 +1193,7 @@ const CHECKS = {
     release()
     await ready(page, SMALL)
     const s1 = await state()
-    const want1 = { image: [], curves: SMALL, enabled: SMALL, swatches: SMALL, turn: [false, colour('ink')], status: false }
+    const want1 = { image: [], curves: SMALL, visible: SMALL, enabled: SMALL, swatches: SMALL, pressed: all, turn: [false, colour('ink')], status: false }
     if (JSON.stringify(s1) !== JSON.stringify(want1)) problem(`once it has loaded: ${JSON.stringify(s1)}, not ${JSON.stringify(want1)}`)
     await page.unroute(`**/img/venn-${nn(SMALL)}.svg`)
   },
@@ -1152,6 +1210,18 @@ const CHECKS = {
     if (got.status !== 'none') problem(`the loading line is still shown (display ${got.status})`)
     const pictures = await page.evaluate(() => document.querySelectorAll('#stage image').length)
     if (pictures) problem(`${pictures} broken pictures left in the drawing area`)
+    // Its text can be selected, to be copied into a bug report: a triple-click on it selects all of it; and neither that
+    // nor a drag across it reaches the drawing beneath (which would zoom in and move)
+    const e = await page.locator('#error').boundingBox(), m0 = await ctm(page)
+    await page.mouse.click(e.x + 40, e.y + e.height / 2, { clickCount: 3 })
+    const selected = await page.evaluate(() => getSelection().toString().trim())
+    if (selected !== got.text) problem(`n=4, a triple-click on the error selects ${JSON.stringify(selected)}, not its text, ${JSON.stringify(got.text)}`)
+    await page.mouse.move(e.x + 20, e.y + e.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(e.x + e.width - 20, e.y + e.height / 2, { steps: 6 })
+    await page.mouse.up()
+    await page.waitForTimeout(400)   // for a zoom or a move to be drawn, SETTLE ms after it
+    holds(problem, await ctm(page), [m0.e, m0.f], [0, 0], m0.a, 'n=4, after a triple-click on the error and a drag across it')
     for (const bad of ['abc', '', '10000000']) {
       await page.goto(`${BASE}/view.html?n=${bad}`)
       await page.waitForSelector('#error', { state: 'visible', timeout: 3000 })
@@ -1168,8 +1238,8 @@ const CHECKS = {
     const got2 = await page.evaluate(() => ({ text: document.getElementById('error').textContent,
                                               swatches: document.querySelectorAll('#curves button').length,
                                               enabled: document.querySelectorAll('#curves button:enabled').length }))
-    const said = got2.text.match(/^Couldn't load (\S+) \((.+)\)$/)
-    if (!said || said[1] !== `img/venn-${nn(SMALL)}.svg` || /[A-Za-z]/.test(said[2])) problem(`use 3 turned a degree more: the error says "${got2.text}"`)
+    const [file, why] = said(got2.text) ?? []
+    if (file !== `img/venn-${nn(SMALL)}.svg` || /[A-Za-z]/.test(why)) problem(`use 3 turned a degree more: the error says "${got2.text}"`)
     if (got2.swatches !== SMALL || got2.enabled) problem(`use 3 turned a degree more: ${got2.swatches} swatches, ${got2.enabled} of them enabled`)
     await page.unroute(`**/img/venn-${nn(SMALL)}.svg`)
     // A turn that fails, each way in a fresh load of the page: the worker unable to draw the view the turn asks for
@@ -1194,8 +1264,8 @@ const CHECKS = {
       await page.evaluate(fail)
       const text = await page.waitForSelector('#error', { state: 'visible', timeout: 10000 })
         .then(() => page.locator('#error').textContent(), () => null)
-      const said = text?.match(/^Couldn't load (\S+) \((.+)\)$/)   // and what went wrong, never a message "undefined"
-      if (!said || said[1] !== `img/venn-${nn(SMALL)}.svg` || /(^|: )undefined$/.test(said[2])) problem(`a turn failing, ${what}: the error says ${JSON.stringify(text)}`)
+      const [file, why] = said(text) ?? []   // and what went wrong, never a message "undefined"
+      if (file !== `img/venn-${nn(SMALL)}.svg` || vague(why)) problem(`a turn failing, ${what}: the error says ${JSON.stringify(text)}`)
     }
   },
 
@@ -1204,11 +1274,8 @@ const CHECKS = {
     // each with the least side the drawing may have there (0 for none)
     for (const [n, opened] of [...PATHS.map(n => [n, open]), ...CANVAS.map(n => [n, openCanvas])]) {
       for (const [w, h, least] of [[375, 667, 0], [320, 568, 0], [400, 500, 0], [844, 390, 300], [568, 320, 0], [667, 375, 0]]) {
-        const phone = await page.context().browser().newContext({ viewport: { width: w, height: h }, hasTouch: true })
+        const p = await sized(page, w, h, 1, true)
         try {
-          const p = await phone.newPage()
-          p.setDefaultTimeout(10000)
-          await p.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort())
           await opened(p, n)
           const boxes = await p.evaluate(() => ['#where', '#tools', '#curves'].map(sel => {
             const r = document.querySelector(sel).getBoundingClientRect()
@@ -1230,12 +1297,27 @@ const CHECKS = {
           // The slider's knob, on opening the last swatch, covering no other stop and no checkbox's target
           await knobbed(p, n - 1, `${w} by ${h}, n=${n}, on opening`, problem)
           // The drawing's square page, fitted, lies in the window
-          const [l, t, r, b] = await p.evaluate(() => {
+          const square = await p.evaluate(() => {
             const m = document.querySelector('#stage svg').getScreenCTM()
             return [m.e, m.f, m.e + m.a * 51200, m.f + m.d * 51200]
-          })
+          }), [l, t, r, b] = square
           if (l < -0.5 || t < -0.5 || r > w + 0.5 || b > h + 0.5) problem(`${w} by ${h}, n=${n}: the drawing's square spans (${l}, ${t}) to (${r}, ${b}), outside the window`)
           if (r - l < least) problem(`${w} by ${h}, n=${n}: the drawing fits in ${r - l} pixels, under ${least}`)
+          // The knob, wherever the slider puts it (a finger pressed on each swatch in turn and lifted: synthetic touch
+          // pointers, as in qual_viewer_slider), covers none of that square, unless the box of the swatches (#curves)
+          // overlaps it anyway, as it may on the smaller phones (each by more than 0.1 pixel: layout rounds to 1/64)
+          const [knobs, swatches] = await p.evaluate(() => {
+            const box = e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom] }
+            const knobs = [...document.querySelectorAll('#curves button')].map(b => {
+              for (const [type, buttons] of [['pointerdown', 1], ['pointerup', 0]]) b.dispatchEvent(new PointerEvent(type,
+                { pointerId: 9, pointerType: 'touch', isPrimary: true, button: 0, buttons, bubbles: true }))
+              return box(b)
+            })
+            return [knobs, box(document.getElementById('curves'))]
+          })
+          const over = knobs.flatMap((k, i) => meet(k, square, 0.1) ? [i] : [])
+          if (!meet(swatches, square, 0.1) && over.length)
+            problem(`${w} by ${h}, n=${n}: the knob covers the drawing's square, (${square.map(v => v.toFixed(2))}), on swatches ${over}, e.g. at (${knobs[over[0]].map(v => v.toFixed(2))}) on swatch ${over[0]}`)
           // On a phone on its side, the swatches stand in a column (vertical writing: see view.html) along the right
           // edge, as near it as #curves's margin, 1rem at most, from right below the top row (#curves's top at most 4.5
           // pixels below #top's bottom)
@@ -1252,20 +1334,25 @@ const CHECKS = {
           await p.waitForTimeout(300)
           if (await look() !== was) problem(`${w} wide, n=${n}: after a tap, + has border ${await look()}, not ${was} as before`)
           // On a phone on its side, the line saying that the drawing is on its way, while img/venn-NN.svg is held back
-          // (never answered), and the error, with it answering 404: each wholly visible, and taking no pointer
-          for (const [sel, what, answer] of landscape ? [['#status', 'the loading line', () => {}], ['#error', 'the error', r => r.fulfill({ status: 404, body: '' })]] : []) {
+          // (never answered), and the error, with it answering 404: each wholly in the window, with nothing over it; the
+          // line taking no pointer, so that the stops under it still take it (none blocked), the error taking it over
+          // all of it, so that its text can be selected and the stops it covers take no taps through it (none missed)
+          for (const [sel, what, answer, wrong, says] of landscape ? [
+            ['#status', 'the loading line', () => {}, 'blocked', 'under it, these don\'t take the pointer'],
+            ['#error', 'the error', r => r.fulfill({ status: 404, body: '' }), 'missed', 'it doesn\'t take the pointer at these points, but what is named does']] : []) {
             await p.route(`**/img/venn-${nn(n)}.svg`, answer)
             await p.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
             await p.waitForFunction(([sel, n]) => document.querySelector(sel)?.checkVisibility() && document.querySelectorAll('#curves button').length === n, [sel, n])
-            const { covered, blocked } = await p.evaluate(unhidden, sel)
-            if (covered.length) problem(`${w} by ${h}, n=${n}: ${what} is covered at ${covered.length} points, e.g. ${covered.slice(0, 3).join('; ')}`)
-            if (blocked.length) problem(`${w} by ${h}, n=${n}: under ${what}, these don't take the pointer: ${blocked.slice(0, 3).join('; ')}`)
+            const got = await p.evaluate(unhidden, sel)
+            if (!got.inside) problem(`${w} by ${h}, n=${n}: ${what} spans (${got.box.slice(0, 2)}) to (${got.box.slice(2)}), not wholly in the window`)
+            if (got.covered.length) problem(`${w} by ${h}, n=${n}: ${what} is covered at ${got.covered.length} points, e.g. ${got.covered.slice(0, 3).join('; ')}`)
+            if (got[wrong].length) problem(`${w} by ${h}, n=${n}: ${what}: ${says}: ${got[wrong].slice(0, 3).join('; ')}`)
             await p.unroute(`**/img/venn-${nn(n)}.svg`)
           }
         } catch (e) {
           problem(`${w} by ${h}, n=${n}: ${e.name}: ${e.message.split('\n')[0]}`)
         } finally {
-          await phone.close()   // even after a failure: one drawing of 23 in memory at a time
+          await p.context().close()   // even after a failure: one drawing of 23 in memory at a time
         }
       }
     }
@@ -1371,11 +1458,8 @@ const CHECKS = {
     await placed('under', 600, 800)
     await page.setViewportSize({ width: W, height: H })
     // A phone with a touch screen: a tap toggles, and the target is 44 by 44 pixels or more
-    const phone = await page.context().browser().newContext({ viewport: { width: 375, height: 667 }, hasTouch: true })
+    const p = await sized(page, 375, 667, 1, true)
     try {
-      const p = await phone.newPage()
-      p.setDefaultTimeout(10000)
-      await p.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort())
       await openShaded(p, SMALL)
       const ps2 = await probes(p, SMALL, await mapping(p))
       for (const [L, what] of [[0b1000000, 'a tap on curve 6\'s checkbox'], [0, 'a second tap']]) {
@@ -1390,17 +1474,13 @@ const CHECKS = {
       }).filter(([, w, h]) => w < 44 || h < 44))
       if (small.length) problem(`375 by 667, touch screen: these checkboxes' targets are under 44 by 44 pixels: ${JSON.stringify(small)}`)
     } finally {
-      await phone.close()
+      await p.context().close()
     }
   },
 
   async slider(page, problem) {
     await open(page, SMALL)
-    const m0 = await ctm(page)
-    const centres = await page.evaluate(() => [...document.querySelectorAll('#curves button')].map(b => {
-      const r = b.getBoundingClientRect()
-      return [r.left + r.width / 2, r.top + r.height / 2]
-    }))
+    const m0 = await ctm(page), centres = await centresOf(page)
     const stops = await stopsOf(page), colours = await page.evaluate(() => [...document.querySelectorAll('#stage path')].map(p => getComputedStyle(p).stroke))
     const at = async (k, what) => {   // curves 0 to k shown, exactly their swatches pressed, and swatch k the knob
       const s = await page.evaluate(() => ({
@@ -1459,14 +1539,18 @@ const CHECKS = {
     await touch([['pointermove', centres[3], 1], ['pointerup', centres[3], 0]])
     await at(3, 'then on to the fourth, and lifted')
     // Keys, each on a swatch focused first: the fourth, where the finger left the slider, then each the swatch the key
-    // before moved the focus to; then, all shown, the third, not the last curve shown, from which a key doesn't move
+    // before moved the focus to; then, all shown, the third, not the last curve shown, from which a key doesn't move.
+    // The knob after each focus too, before its key: before, where the finger or the key before left it
+    let before = 3
     for (const [on, key, k] of [[3, 'ArrowRight', 4], [4, 'ArrowDown', 5], [5, 'ArrowLeft', 4], [4, 'ArrowUp', 3], [3, 'ArrowUp', 2],
                                 [2, 'Home', 0], [0, 'End', SMALL - 1], [2, 'ArrowLeft', SMALL - 2]]) {
       await page.locator('#curves button').nth(on).focus()
+      await at(before, `swatch ${on} focused, before ${key}`)
       await page.keyboard.press(key)
       await at(k, `${key} on swatch ${on}`)
       const focus = await page.evaluate(() => [...document.querySelectorAll('#curves button')].indexOf(document.activeElement))
       if (focus !== k) problem(`after ${key} on swatch ${on}, the focus is on swatch ${focus}, not ${k}`)
+      before = k
     }
     // A click on the second swatch, then Escape
     await page.locator('#curves button').nth(1).click()
@@ -1475,21 +1559,19 @@ const CHECKS = {
     await at(SMALL - 1, 'then Escape')
     holds(problem, await ctm(page), [m0.e, m0.f], [0, 0], m0.a, 'after dragging along the swatches, keys on them, a click and Escape')
     // A phone with a touch screen, which can't hover: the knob as above, on opening and after a tap on the third
-    // swatch; the swatches' cursor pointer, as every button's, never grab
-    const phone = await page.context().browser().newContext({ viewport: { width: 375, height: 667 }, hasTouch: true })
+    // swatch, which doesn't move the drawing either; the swatches' cursor pointer, as every button's, never grab
+    const p = await sized(page, 375, 667, 1, true)
     try {
-      const p = await phone.newPage()
-      p.setDefaultTimeout(10000)
-      await p.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort())
       await open(p, SMALL)
-      const stops2 = await stopsOf(p)
+      const stops2 = await stopsOf(p), m2 = await ctm(p)
       await knobbed(p, SMALL - 1, '375 by 667, touch screen, on opening', problem, stops2, colours)
       await p.locator('#curves button').nth(2).tap()
       await knobbed(p, 2, '375 by 667, touch screen, after a tap on the third swatch', problem, stops2, colours)
+      holds(problem, await ctm(p), [m2.e, m2.f], [0, 0], m2.a, '375 by 667, touch screen, after a tap on the third swatch')
       const got = await p.evaluate(() => [...document.querySelectorAll('#curves button')].map(b => getComputedStyle(b).cursor))
       if (got.some(c => c !== 'pointer')) problem(`375 by 667, touch screen: the swatches' cursors are ${got}, not pointer`)
     } finally {
-      await phone.close()
+      await p.context().close()
     }
   },
 
@@ -1884,8 +1966,8 @@ const CHECKS = {
                                                  enabled: document.querySelectorAll('#curves button:enabled').length,
                                                  shown: window.__seen.shown.length,
                                                  image: [...document.querySelectorAll('#stage image')].map(i => i.getAttribute('href')) }))
-        const said = got.text.match(/^Couldn't load (\S+) \((.+)\)$/)
-        if (!said || said[1] !== `img/venn-${nn(n)}.svg` || (body === null && said[2] !== '404')) problem(`n=${n}, ${what}: the error says "${got.text}"`)
+        const [file, why] = said(got.text) ?? []
+        if (file !== `img/venn-${nn(n)}.svg` || (body === null && why !== '404')) problem(`n=${n}, ${what}: the error says "${got.text}"`)
         if (got.status !== 'none') problem(`n=${n}, ${what}: the loading line is still shown (display ${got.status})`)
         if (got.swatches !== n || got.enabled !== 0) problem(`n=${n}, ${what}: ${got.swatches} swatches, ${got.enabled} of them enabled`)
         if (got.shown) problem(`n=${n}, ${what}: ${got.shown} drawings shown`)
@@ -1922,8 +2004,8 @@ const CHECKS = {
         await p.goto(`${BASE}/view.html?n=${n}`, { waitUntil: 'commit' })
         const text = await p.waitForSelector('#error', { state: 'visible', timeout: 60000 })
           .then(() => p.locator('#error').textContent(), () => null)
-        const said = text?.match(/^Couldn't load (\S+) \((.+)\)$/)   // and what failed, never a message "undefined"
-        if (!said || said[1] !== `img/venn-${nn(n)}.svg` || !said[2].includes(want) || /(^|: )undefined$/.test(said[2]))
+        const [file, why] = said(text) ?? []   // and what failed, never a message "undefined"
+        if (file !== `img/venn-${nn(n)}.svg` || !why.includes(want) || vague(why))
           problem(`n=${n}, ${what}: the error says ${JSON.stringify(text)}, not that it couldn't load img/venn-${nn(n)}.svg (${want}..., no message "undefined")`)
         await p.waitForTimeout(1000)   // for an uncaught error to be reported
         await p.context().close()

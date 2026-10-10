@@ -25,9 +25,9 @@ class Path2D {
   bezierCurveTo(...p) { this.pieces.push(['C', ...p]) }
   closePath() {}
 }
-// A 2D context that draws nothing: every property can be set, and every method does nothing (getImageData() gives a
-// pixel)
-const nothing = new Proxy({}, { get: (_, k) => k === 'getImageData' ? () => ({ data: [0, 0, 0, 0] }) : () => {}, set: () => true })
+// A 2D context that draws nothing: what is set on it reads back (draw() reads its lineWidth), and every method does
+// nothing (getImageData() gives a pixel)
+const nothing = new Proxy({}, { get: (o, k) => k in o ? o[k] : k === 'getImageData' ? () => ({ data: [0, 0, 0, 0] }) : () => {} })
 class OffscreenCanvas {
   getContext() { return nothing }
   transferToImageBitmap() { return {} }
@@ -38,9 +38,11 @@ const context = vm.createContext({ Path2D, OffscreenCanvas, location: { search: 
                                    URLSearchParams, TextEncoder, TextDecoder })
 vm.runInContext(await readFile(path.join(ROOT, 'canvas.js'), 'utf8'), context)
 const { parse, tree, outline, draw } = vm.runInContext('({ parse, tree, outline, draw })', context)
-// draw()'s calls of outline() go through this, which keeps the tol of each (canvas.js's outline is the vm's global)
-const tols = []
+// draw()'s calls of outline() go through this, which keeps the view and the tol of each (canvas.js's outline is the
+// vm's global)
+const views = [], tols = []
 context.outline = (xy, t, view, tol) => {
+  views.push(view)
   tols.push(tol)
   return outline(xy, t, view, tol)
 }
@@ -52,18 +54,22 @@ const bezier = (c, t) => [0, 1].map(o => (1 - t) ** 3 * c[o] + 3 * (1 - t) ** 2 
 // zoomed in by 4, 16 and 64 about five knots of curve 0 (a tenth, three tenths, ... of the way along it), with tol half a
 // pixel, each chord outline() puts in place of a run of spans whose box meets the window strays at most tol from the run
 // (outline() replaces only runs whose flatness, a bound on that, is under tol): no point of the run tried (SAMPLES a
-// span) further than tol from the chord. And draw(), for the view at fit with dpr 1 and 2 device pixels to a CSS pixel
-// (no curves, the shading outside every curve), passes outline() tol half a pixel of its shading's canvas: s / rs / 2,
-// s page units to a CSS pixel and rs the canvas's pixels to a CSS pixel, as draw() posts it.
+// span) further than tol from the chord. And draw(), for the view at fit with dpr 1 and 2 device pixels to a CSS pixel,
+// and for the view zoomed in by 16 about the page's centre with 2 (no curves, the shading outside every curve), passes
+// outline() a finite view, and tol half a pixel of its shading's canvas: s / rs / 2, s page units to a CSS pixel at
+// that view and rs the canvas's pixels to a CSS pixel, as draw() posts it.
 function problems(n, d) {
   const xy = d.xy, t = tree(xy), spans = (xy.length - 2) / 6, bad = []
-  for (const dpr of [1, 2]) {
-    posted.length = tols.length = 0
-    draw({ ...d, tree: t, cells: { paths: [], boxes: [], spans: [] } }, { x: MID - W / 2 * FIT, y: MID - H / 2 * FIT, s: FIT, fit: FIT,
+  for (const [dpr, z, where] of [[1, 1, 'at fit'], [2, 1, 'at fit'], [2, 16, 'zoomed in by 16']]) {
+    const s = FIT / z
+    posted.length = views.length = tols.length = 0
+    draw({ ...d, tree: t, cells: { paths: [], boxes: [], spans: [] } }, { x: MID - W / 2 * s, y: MID - H / 2 * s, s, fit: FIT,
           w: W, h: H, dpr, k: -1, inside: d.angles.map(() => false), colour: '#e2e5ea', seq: 1 })
-    const want = posted.length === 1 ? FIT / posted[0].rs / 2 : NaN, wrong = tols.filter(tol => !(Math.abs(tol / want - 1) < 1e-12))
+    const want = posted.length === 1 ? s / posted[0].rs / 2 : NaN, wrong = tols.filter(tol => !(Math.abs(tol / want - 1) < 1e-12))
     if (posted.length !== 1 || tols.length !== n || wrong.length)
-      bad.push(`at devicePixelRatio ${dpr}, draw() passed outline() ${tols.length} tols of ${[...new Set(tols.map(tol => (tol / FIT).toPrecision(6)))]} CSS pixels and posted rs ${posted.map(m => m.rs).join(' and ')}, not ${n} tols of half a pixel of its shading's canvas, ${(want / FIT).toPrecision(6)}`)
+      bad.push(`${where}, at devicePixelRatio ${dpr}, draw() passed outline() ${tols.length} tols of ${[...new Set(tols.map(tol => (tol / s).toPrecision(6)))]} CSS pixels and posted rs ${posted.map(m => m.rs).join(' and ')}, not ${n} tols of half a pixel of its shading's canvas, ${(want / s).toPrecision(6)}`)
+    const unbounded = views.filter(v => !v.every(Number.isFinite))
+    if (unbounded.length) bad.push(`${where}, at devicePixelRatio ${dpr}, draw() passed outline() ${unbounded.length} views not finite, e.g. [${unbounded[0]}]`)
   }
   const knot = new Map()   // "x,y" of each knot, from the second to the last (the first's again), to its number
   for (let k = 1; k <= spans; k++) knot.set(`${xy[6 * k]},${xy[6 * k + 1]}`, k)
